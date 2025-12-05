@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AWS Inventory Export</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2rem; background: #f7fafc; }
+        h1 { margin-bottom: 1rem; }
+        form { background: #fff; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+        fieldset { border: 1px solid #e2e8f0; margin-bottom: 1.5rem; padding: 1rem; }
+        legend { font-weight: bold; }
+        label { display: block; font-weight: bold; margin-top: 0.75rem; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 0.5rem; margin-top: 0.25rem; border: 1px solid #cbd5f5; border-radius: 4px; }
+        .helptext { font-size: 0.85rem; color: #4a5568; }
+        .errorlist { color: #c53030; margin: 0.25rem 0 0.5rem; list-style: none; padding: 0; }
+        .checkbox-group { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
+        .checkbox-group label { font-weight: normal; display: flex; align-items: center; gap: 0.35rem; margin-top: 0; }
+        button { background: #2563eb; color: #fff; border: none; padding: 0.75rem 1.5rem; border-radius: 4px; font-size: 1rem; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+        .non-field-errors { color: #c53030; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>Automation Tasks</h1>
+
+    <form method="get" style="margin-bottom: 1rem;">
+        <label for="task-select"><strong>Select task</strong></label>
+        <select id="task-select" name="task" onchange="this.form.submit()">
+            {% for task in tasks %}
+                <option value="{{ task.task_id }}" {% if task.task_id == active_task_id %}selected{% endif %}>
+                    {{ task.label }}
+                </option>
+            {% endfor %}
+        </select>
+        <noscript><button type="submit">Load</button></noscript>
+    </form>
+
+    {% for task in tasks %}
+        {% if task.task_id == active_task_id %}
+            <p>{{ task.description }}</p>
+        {% endif %}
+    {% endfor %}
+
+    {% if form.non_field_errors %}
+        <div class="non-field-errors">
+            {% for error in form.non_field_errors %}
+                <p>{{ error }}</p>
+            {% endfor %}
+        </div>
+    {% endif %}
+    <form method="post">
+        {% csrf_token %}
+        {% for hidden in form.hidden_fields %}
+            {{ hidden }}
+        {% endfor %}
+        <fieldset>
+            {% for field in form.visible_fields %}
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {% if field.widget_type == "checkboxselectmultiple" %}
+                    <div class="checkbox-group">
+                        {% for checkbox in field %}
+                            <label>{{ checkbox.tag }} {{ checkbox.choice_label }}</label>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    {{ field }}
+                {% endif %}
+                {% if field.help_text %}<p class="helptext">{{ field.help_text }}</p>{% endif %}
+                {{ field.errors }}
+            {% endfor %}
+        </fieldset>
+
+        <button type="submit">Run Task</button>
+    </form>
+</body>
+</html>

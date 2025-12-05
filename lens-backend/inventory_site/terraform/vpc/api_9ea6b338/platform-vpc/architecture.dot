@@ -1,0 +1,24 @@
+digraph gcp_vpc {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  subgraph cluster_asia_south1 {
+    label="Region asia-south1";
+    sub_platform_private_2 [label="platform-private-2\n10.21.120.0/23"]; 
+    sub_platform_private_1 [label="platform-private-1\n10.21.110.0/24"]; 
+    sub_platform_public_1 [label="platform-public-1\n10.21.10.0/24"]; 
+    sub_platform_public_3 [label="platform-public-3\n10.21.30.0/24"]; 
+    sub_platform_private_3 [label="platform-private-3\n10.21.130.0/24"]; 
+    sub_platform_public_2 [label="platform-public-2\n10.21.20.0/24"]; 
+  }
+  router_router_platform_vpc_asia_south1_1 [label="Router router-platform-vpc-asia-south1-1", shape=box, style=filled, fillcolor="#DAE8FC"];
+  nat_cloud_nat_platform_vpc_asia_south1_1 [label="Cloud NAT cloud-nat-platform-vpc-asia-south1-1", shape=ellipse, style=filled, fillcolor="#E8F0FE"]; 
+  router_router_platform_vpc_asia_south1_1 -> nat_cloud_nat_platform_vpc_asia_south1_1 [label="NAT"];
+  igw_default [label="Default Internet Gateway", shape=ellipse, style=filled, fillcolor="#FFF4E5"]; 
+  sub_platform_private_2 -> router_router_platform_vpc_asia_south1_1;
+  sub_platform_private_1 -> router_router_platform_vpc_asia_south1_1;
+  sub_platform_public_1 -> igw_default;
+  sub_platform_public_3 -> igw_default;
+  sub_platform_private_3 -> router_router_platform_vpc_asia_south1_1;
+  sub_platform_public_2 -> igw_default;
+  nat_cloud_nat_platform_vpc_asia_south1_1 -> igw_default [style=dashed, label="outbound"];
+}
