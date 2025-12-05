@@ -15,6 +15,7 @@ from inventory.services.task_registry import (
     TaskExecutionResult,
     automation_registry,
 )
+from ecr2artifact import list_ecr_repositories, list_ecr_images, configure_boto3_session
 
 
 def inventory_request_view(request):
@@ -299,3 +300,40 @@ def gcp_network_detail_api(request):
         return JsonResponse({"error": f"Failed to load GCP network: {exc}"}, status=500)
 
     return JsonResponse({"network": network_data})
+
+
+@csrf_exempt
+def aws_ecr_repos_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    if not region:
+        return JsonResponse({"error": "Missing required field 'region'."}, status=400)
+
+    creds = _aws_creds_from_payload(payload)
+    try:
+        configure_boto3_session(
+            access_key=creds.get("access_key"),
+            secret_key=creds.get("secret_key"),
+            session_token=None,
+            profile_name=None,
+        )
+        repos = list_ecr_repositories(region)
+    except Exception as exc:  # pragma: no cover - safety
+        return JsonResponse({"error": f"Failed to list ECR repos: {exc}"}, status=500)
+
+    data = [
+        {
+            "name": repo.get("repositoryName", ""),
+            "uri": repo.get("repositoryUri", ""),
+            "image_count": len(list_ecr_images(region, repo.get("repositoryName", ""))) if repo.get("repositoryName") else 0,
+        }
+        for repo in repos
+    ]
+    return JsonResponse({"repos": data})

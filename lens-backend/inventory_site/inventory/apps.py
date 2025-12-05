@@ -6,4 +6,4 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        from .services import aws_task, terraform_task, classic_vpn_task  # noqa: F401
+        from .services import aws_task, terraform_task, classic_vpn_task, ecr_migration_task  # noqa: F401

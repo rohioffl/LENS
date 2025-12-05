@@ -240,6 +240,20 @@ const App = () => {
   const [invStatus, setInvStatus] = useState('');
   const invProgressTimer = useRef(null);
   const [view, setView] = useState('home');
+  const [ecrGcpProject, setEcrGcpProject] = useState('');
+  const [ecrGcpRegion, setEcrGcpRegion] = useState('us-central1');
+  const [ecrWorkers, setEcrWorkers] = useState(4);
+  const [ecrLogs, setEcrLogs] = useState('');
+  const [ecrError, setEcrError] = useState('');
+  const [ecrArtifacts, setEcrArtifacts] = useState([]);
+  const [ecrRepos, setEcrRepos] = useState([]);
+  const [selectedEcrRepos, setSelectedEcrRepos] = useState([]);
+  const [ecrRepoError, setEcrRepoError] = useState('');
+  const [ecrServiceKey, setEcrServiceKey] = useState('');
+  const [ecrServiceFileName, setEcrServiceFileName] = useState('');
+  const [ecrProjectOptions, setEcrProjectOptions] = useState([]);
+  const [ecrProjectError, setEcrProjectError] = useState('');
+  const ecrMaxWorkers = useMemo(() => Math.max(1, (navigator.hardwareConcurrency || 8) * 2), []);
   const [vpnServiceKey, setVpnServiceKey] = useState('');
   const [vpnGcpProject, setVpnGcpProject] = useState('');
   const [vpnGcpRegion, setVpnGcpRegion] = useState('us-central1');
@@ -260,6 +274,7 @@ const App = () => {
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
   useArtifactCleanup(vpnArtifacts);
+  useArtifactCleanup(ecrArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
@@ -274,6 +289,14 @@ const App = () => {
 
   const subnetRows = useMemo(() => subnets, [subnets]);
   const gcpSubnetOptions = vpnGcpSubnets;
+
+  useEffect(() => {
+    if (!resolvedRegion) return;
+    const mapped = AWS_TO_GCP_REGION[resolvedRegion];
+    if (mapped) {
+      setEcrGcpRegion(mapped);
+    }
+  }, [resolvedRegion]);
 
   useEffect(() => {
     if (!authReady) {
@@ -365,6 +388,71 @@ const App = () => {
       setGcpRegion(mapped);
     }
   }, [resolvedRegion]);
+
+  useEffect(() => {
+    if (view !== 'ecr_migration') {
+        setEcrRepos([]);
+        setSelectedEcrRepos([]);
+        setEcrRepoError('');
+        return;
+    }
+    if (!authReady) {
+      setEcrRepos([]);
+      setSelectedEcrRepos([]);
+      setEcrRepoError('');
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/aws/ecr-repos/', {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          region: resolvedRegion,
+        });
+        const items = res.repos || [];
+        setEcrRepos(items);
+        setSelectedEcrRepos(items.map((repo) => repo.name));
+        setEcrRepoError('');
+      } catch (err) {
+        setEcrRepoError(err.message || String(err));
+        setEcrRepos([]);
+        setSelectedEcrRepos([]);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, authReady, awsAccess, awsSecret, resolvedRegion]);
+
+  useEffect(() => {
+    if (view !== 'ecr_migration') {
+      setEcrProjectOptions([]);
+      setEcrProjectError('');
+      return;
+    }
+    if (!ecrServiceKey.trim()) {
+      setEcrProjectOptions([]);
+      setEcrProjectError('');
+      setEcrGcpProject('');
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/gcp/projects/', {
+          service_key: ecrServiceKey,
+        });
+        const options = res.projects || [];
+        setEcrProjectOptions(options);
+        setEcrProjectError('');
+        const existing = ecrGcpProject && options.some((entry) => entry.project_id === ecrGcpProject) ? ecrGcpProject : '';
+        const preferred = existing || options[0]?.project_id || res.project_id || '';
+        setEcrGcpProject(preferred);
+      } catch (err) {
+        setEcrProjectError(err.message || String(err));
+        setEcrProjectOptions([]);
+        setEcrGcpProject('');
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [ecrServiceKey, view, ecrGcpProject]);
 
   useEffect(() => {
     if (view !== 'classic_vpn') {
@@ -651,6 +739,41 @@ const App = () => {
     }
   };
 
+  const runEcrMigration = async () => {
+    setEcrError('');
+    setEcrLogs('');
+    setEcrArtifacts([]);
+    if (!awsAccess.trim() || !awsSecret.trim() || !resolvedRegion || !ecrGcpProject.trim() || !ecrGcpRegion.trim()) {
+      setEcrError('AWS creds, AWS region, GCP project, and GCP region are required.');
+      return;
+    }
+    if (!selectedEcrRepos.length) {
+      setEcrError('Select at least one ECR repository to migrate.');
+      return;
+    }
+    try {
+      const res = await postJson('/api/tasks/run/', {
+        task_id: 'ecr_migration',
+        data: {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          aws_region: resolvedRegion,
+          gcp_project: ecrGcpProject.trim(),
+          gcp_region: ecrGcpRegion.trim(),
+          workers: Math.min(Number(ecrWorkers) || 1, ecrMaxWorkers),
+          aws_repos: selectedEcrRepos,
+        },
+      });
+      setEcrLogs((res.logs || '').trim());
+      setEcrArtifacts(createDownloadEntries(res.artifacts || []));
+    } catch (err) {
+      setEcrError(err.message || String(err));
+      if (err.logs) {
+        setEcrLogs((err.logs || '').trim());
+      }
+    }
+  };
+
   const runInventory = async () => {
     setInvError('');
     setInvLogs('');
@@ -780,6 +903,11 @@ const App = () => {
             <p>Plan a site-to-site IPSec tunnel between AWS and GCP VPC networks.</p>
             <button onClick={() => setView('classic_vpn')}>Build VPN</button>
           </div>
+          <div className="task-card">
+            <h2>ECR to Artifact Registry</h2>
+            <p>Migrate all ECR repos to GCP Artifact Registry with parallel pushes and skip existing tags.</p>
+            <button onClick={() => setView('ecr_migration')}>Migrate Repos</button>
+          </div>
         </div>
       )}
 
@@ -789,7 +917,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'classic_vpn'].includes(view)) && (
+      {(['terraform', 'inventory', 'classic_vpn', 'ecr_migration'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -800,7 +928,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'classic_vpn'].includes(view) && (
+        {['terraform', 'classic_vpn', 'ecr_migration'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -1054,6 +1182,120 @@ const App = () => {
           </div>
         </fieldset>
       </>
+      )}
+
+      {view === 'ecr_migration' && (
+      <fieldset>
+        <legend>ECR to Artifact Registry</legend>
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>ECR Repositories</label>
+            <div className="pill-actions">
+              <button type="button" onClick={() => setSelectedEcrRepos(ecrRepos.map((r) => r.name))} disabled={!ecrRepos.length}>
+                Select all
+              </button>
+              <button type="button" onClick={() => setSelectedEcrRepos([])} disabled={!selectedEcrRepos.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {ecrRepoError && <div className="error">{ecrRepoError}</div>}
+          <div className="checkbox-grid">
+            {ecrRepos.map((repo) => (
+              <label key={repo.name} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={selectedEcrRepos.includes(repo.name)}
+                  onChange={() =>
+                    setSelectedEcrRepos((prev) =>
+                      prev.includes(repo.name) ? prev.filter((n) => n !== repo.name) : [...prev, repo.name]
+                    )
+                  }
+                />
+                <span>{repo.name} ({repo.image_count ?? 0} images)</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <label>
+          Upload GCP Service Account JSON
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) {
+                setEcrServiceKey('');
+                setEcrServiceFileName('');
+                setEcrProjectOptions([]);
+                return;
+              }
+              setEcrServiceFileName(file.name);
+              const reader = new FileReader();
+              reader.onload = (evt) => {
+                setEcrServiceKey(evt.target?.result?.toString() || '');
+              };
+              reader.readAsText(file);
+            }}
+          />
+          {ecrServiceFileName && <small className="file-indicator">Loaded: {ecrServiceFileName}</small>}
+        </label>
+        {ecrProjectOptions.length > 0 ? (
+          <label>
+            GCP Project
+            <select value={ecrGcpProject} onChange={(e) => setEcrGcpProject(e.target.value)}>
+              {ecrProjectOptions.map((project) => (
+                <option key={project.project_id || project.name} value={project.project_id}>
+                  {project.display_name && project.display_name !== project.project_id
+                    ? `${project.display_name} (${project.project_id})`
+                    : project.project_id}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label>
+            GCP Project ID
+            <input value={ecrGcpProject} onChange={(e) => setEcrGcpProject(e.target.value)} placeholder="my-gcp-project" />
+          </label>
+        )}
+        {ecrProjectError && <div className="error">{ecrProjectError}</div>}
+        <label>
+          Artifact Registry Region
+          <select value={ecrGcpRegion} onChange={(e) => setEcrGcpRegion(e.target.value)}>
+            {GCP_REGIONS.map((region) => (
+              <option key={region.id} value={region.id}>
+                {region.display}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Parallel Workers (repos & images)
+          <input
+            type="number"
+            min="1"
+            value={ecrWorkers}
+            onChange={(e) => setEcrWorkers(e.target.value)}
+            placeholder="4"
+          />
+          <small>Max recommended: {ecrMaxWorkers}</small>
+        </label>
+        <button onClick={runEcrMigration} disabled={!authReady}>
+          Run Migration
+        </button>
+        {ecrError && <div className="error">{ecrError}</div>}
+        <h3>Logs</h3>
+        <pre>{ecrLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {ecrArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
       )}
 
       {view === 'inventory' && (

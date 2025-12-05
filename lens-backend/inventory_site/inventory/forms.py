@@ -167,3 +167,37 @@ class ClassicVpnForm(AutomationTaskForm):
                 continue
             cleaned[list_field] = value
         return cleaned
+
+
+class EcrMigrationForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region", initial="ap-south-1")
+    gcp_project = forms.CharField(label="GCP Project ID")
+    gcp_region = forms.CharField(label="Artifact Registry Region", initial="asia-southeast1")
+    aws_repos = forms.JSONField(required=False, label="Selected ECR Repos")
+    workers = forms.IntegerField(
+        label="Parallel Workers",
+        initial=4,
+        min_value=1,
+        help_text="Controls parallelism for both repositories and images.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "ecr_migration"
+
+    def clean(self):
+        cleaned = super().clean()
+        required = ["access_key", "secret_key", "aws_region", "gcp_project", "gcp_region"]
+        for field in required:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+        workers = cleaned.get("workers")
+        if workers is not None and workers < 1:
+            self.add_error("workers", "Workers must be at least 1.")
+        repos = cleaned.get("aws_repos") or []
+        if repos and not isinstance(repos, list):
+            self.add_error("aws_repos", "Expected a JSON array of repository names.")
+        cleaned["aws_repos"] = repos
+        return cleaned
