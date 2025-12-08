@@ -6,14 +6,30 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        # Import task modules to ensure they register with the automation registry.
         import importlib
 
-        for module in (
-            "inventory.services.aws_task",
-            "inventory.services.terraform_task",
-            "inventory.services.classic_vpn_task",
-            "inventory.services.ecr_migration_task",
-            "inventory.services.ha_vpn_task",
+        def _import_task(tail: str):
+            # Try both the app-relative name and an explicit package path.
+            candidates = [
+                f"{self.name}.services.{tail}",
+                f"inventory_site.inventory.services.{tail}",
+            ]
+            last_error = None
+            for candidate in candidates:
+                try:
+                    return importlib.import_module(candidate)
+                except ModuleNotFoundError as exc:
+                    last_error = exc
+                    continue
+            # If all candidates fail, re-raise the last error for visibility.
+            if last_error:
+                raise last_error
+
+        for tail in (
+            "aws_task",
+            "terraform_task",
+            "classic_vpn_task",
+            "ecr_migration_task",
+            "ha_vpn_task",
         ):
-            importlib.import_module(module)
+            _import_task(tail)
