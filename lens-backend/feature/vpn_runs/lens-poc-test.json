@@ -1,0 +1,38 @@
+{
+  "aws_region": "ap-south-1",
+  "aws_vgw_asn": 64512,
+  "aws_vpc_cidr": "10.0.0.0/21",
+  "aws_vpc_id": "vpc-079e1fae6b2720b55",
+  "gcp_asn": 64513,
+  "gcp_network": "rohit-automation-vpc",
+  "gcp_project": "ccd-poc-project",
+  "gcp_region": "asia-south1",
+  "gcp_subnets": [
+    "10.1.0.0/23",
+    "10.1.4.0/23",
+    "10.1.6.0/23",
+    "10.1.2.0/23"
+  ],
+  "name_prefix": "lens-poc-test",
+  "resources": {
+    "aws_cgw_id": "cgw-037d09964f09da31e",
+    "aws_route_tables": [
+      "rtb-0266d801b71a79565"
+    ],
+    "aws_vgw_id": "vgw-07393a2c19bcc527e",
+    "aws_vpn_id": "vpn-0302606b01dfdcb7a",
+    "gcp_forwarding_rules": [
+      "lens-poc-test-esp",
+      "lens-poc-test-udp500",
+      "lens-poc-test-udp4500"
+    ],
+    "gcp_ip": "34.100.140.176",
+    "gcp_route": "lens-poc-test-aws-route",
+    "gcp_target_gateway": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/targetVpnGateways/lens-poc-test-classic-gateway",
+    "gcp_tunnels": [
+      "lens-poc-test-tunnel-1",
+      "lens-poc-test-tunnel-2"
+    ]
+  },
+  "timestamp_utc": "2025-12-08T11:11:18.201039+00:00"
+}

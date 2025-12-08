@@ -1,0 +1,35 @@
+{
+  "aws_region": "ap-south-1",
+  "aws_vgw_asn": 64513,
+  "aws_vpc_cidr": "10.0.0.0/21",
+  "aws_vpc_id": "vpc-079e1fae6b2720b55",
+  "gcp_asn": 64512,
+  "gcp_network": "rohit-automation-vpc",
+  "gcp_project": "ccd-poc-project",
+  "gcp_region": "asia-south1",
+  "gcp_subnets": [
+    "10.1.0.0/23"
+  ],
+  "name_prefix": "classic-vpn",
+  "resources": {
+    "aws_cgw_id": "cgw-0e3b5b298ab6314d3",
+    "aws_route_tables": [
+      "rtb-0266d801b71a79565"
+    ],
+    "aws_vgw_id": "vgw-00b9d706b030e0b9c",
+    "aws_vpn_id": "vpn-03101c6a05190acc1",
+    "gcp_forwarding_rules": [
+      "classic-vpn-esp",
+      "classic-vpn-udp500",
+      "classic-vpn-udp4500"
+    ],
+    "gcp_ip": "35.244.52.31",
+    "gcp_route": "classic-vpn-aws-route",
+    "gcp_target_gateway": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/targetVpnGateways/classic-vpn-classic-gateway",
+    "gcp_tunnels": [
+      "classic-vpn-tunnel-1",
+      "classic-vpn-tunnel-2"
+    ]
+  },
+  "timestamp_utc": "2025-12-08T10:47:28.003767+00:00"
+}
