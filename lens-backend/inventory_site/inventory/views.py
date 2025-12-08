@@ -1,14 +1,16 @@
 import base64
 import json
+import queue
+import threading
 from contextlib import redirect_stderr, redirect_stdout
-from io import BytesIO, StringIO
+from io import BytesIO, StringIO, TextIOBase
 from zipfile import ZipFile
 
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
-from feature import classic_vpn, terraform_vpc
+from feature import gcp_vpn, terraform_vpc
 
 from inventory.services.task_registry import (
     TaskExecutionError,
@@ -79,6 +81,17 @@ def _build_download_response(result: TaskExecutionResult) -> HttpResponse:
     return response
 
 
+def _serialize_artifacts(result: TaskExecutionResult):
+    return [
+        {
+            "filename": artifact.filename,
+            "content_type": artifact.content_type,
+            "data": base64.b64encode(artifact.content).decode("ascii"),
+        }
+        for artifact in result.artifacts
+    ]
+
+
 @csrf_exempt
 def run_task_api(request):
     if request.method != "POST":
@@ -118,24 +131,105 @@ def run_task_api(request):
             status=500,
         )
 
-    artifacts_payload = [
-        {
-            "filename": artifact.filename,
-            "content_type": artifact.content_type,
-            "data": base64.b64encode(artifact.content).decode("ascii"),
-        }
-        for artifact in result.artifacts
-    ]
-
     return JsonResponse(
         {
             "status": "ok",
             "task_id": task_id,
             "archive_name": result.archive_name,
-            "artifacts": artifacts_payload,
+            "artifacts": _serialize_artifacts(result),
             "logs": log_stream.getvalue(),
         }
     )
+
+
+class _StreamingWriter(TextIOBase):
+    def __init__(self, push):
+        super().__init__()
+        self._push = push
+        self._buffer = ""
+
+    def write(self, data):
+        if not data:
+            return 0
+        self._buffer += data.replace("\r", "")
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line:
+                self._push(line)
+        return len(data)
+
+    def flush(self):
+        if self._buffer.strip():
+            self._push(self._buffer.strip())
+        self._buffer = ""
+
+
+@csrf_exempt
+def run_task_stream(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    task_id = payload.get("task_id") or automation_registry.default_task_id
+    form_data = payload.get("data") or {}
+    form_data["task_id"] = task_id
+
+    try:
+        task_def = automation_registry.get(task_id)
+    except KeyError:
+        return JsonResponse({"error": f"Unknown task '{task_id}'."}, status=400)
+
+    form = task_def.form_class(form_data)
+    if not form.is_valid():
+        return JsonResponse({"error": "Validation failed.", "details": form.errors}, status=400)
+
+    event_queue: "queue.Queue[dict | None]" = queue.Queue()
+
+    def push_event(event: dict):
+        event_queue.put(event)
+
+    def worker():
+        writer = _StreamingWriter(lambda message: push_event({"event": "log", "message": message}))
+        try:
+            with redirect_stdout(writer), redirect_stderr(writer):
+                result = task_def.runner(form.cleaned_data)
+            writer.flush()
+            push_event(
+                {
+                    "event": "result",
+                    "status": "ok",
+                    "task_id": task_id,
+                    "archive_name": result.archive_name,
+                    "artifacts": _serialize_artifacts(result),
+                }
+            )
+        except TaskExecutionError as exc:
+            push_event({"event": "result", "status": "error", "error": str(exc)})
+        except Exception as exc:  # pragma: no cover - safety
+            push_event(
+                {
+                    "event": "result",
+                    "status": "error",
+                    "error": f"Unexpected failure while running '{task_def.label}': {exc}",
+                }
+            )
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def event_stream():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield (json.dumps(item) + "\n").encode("utf-8")
+
+    return StreamingHttpResponse(event_stream(), content_type="application/x-ndjson")
 
 
 def _aws_creds_from_payload(payload):
@@ -231,8 +325,8 @@ def gcp_projects_api(request):
         return JsonResponse({"error": "Field 'service_key' is required."}, status=400)
 
     try:
-        default_project, projects = classic_vpn.list_gcp_projects(service_key)
-    except classic_vpn.ClassicVpnError as exc:
+        default_project, projects = gcp_vpn.list_gcp_projects(service_key)
+    except gcp_vpn.GcpVpnError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except SystemExit as exc:  # pragma: no cover - missing deps
         return JsonResponse({"error": str(exc)}, status=400)
@@ -258,8 +352,8 @@ def gcp_networks_api(request):
         return JsonResponse({"error": "Field 'service_key' is required."}, status=400)
 
     try:
-        resolved_project, networks = classic_vpn.list_gcp_networks(service_key, project)
-    except classic_vpn.ClassicVpnError as exc:
+        resolved_project, networks = gcp_vpn.list_gcp_networks(service_key, project)
+    except gcp_vpn.GcpVpnError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except SystemExit as exc:  # missing deps from ensure_compute_client
         return JsonResponse({"error": str(exc)}, status=400)
@@ -291,8 +385,8 @@ def gcp_network_detail_api(request):
         return JsonResponse({"error": "Fields 'service_key', 'gcp_project', and 'gcp_network' are required."}, status=400)
 
     try:
-        network_data = classic_vpn.get_gcp_network(service_key, project, network)
-    except classic_vpn.ClassicVpnError as exc:
+        network_data = gcp_vpn.get_gcp_network(service_key, project, network)
+    except gcp_vpn.GcpVpnError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except SystemExit as exc:  # pragma: no cover - dependency hint
         return JsonResponse({"error": str(exc)}, status=400)

@@ -53,6 +53,7 @@ fieldset {
   padding: 1.2rem;
   margin-bottom: 1.5rem;
   background: #fff;
+  position: relative;
 }
 
 legend {
@@ -250,4 +251,33 @@ pre {
   margin-top: 0.4rem;
   color: #475569;
   font-style: italic;
+}
+
+.fieldset-overlay {
+  position: relative;
+}
+
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(248, 250, 252, 0.92);
+  backdrop-filter: blur(2px);
+  border-radius: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  z-index: 10;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem;
+}
+
+.loading-overlay strong {
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.loading-overlay small {
+  color: #475569;
 }

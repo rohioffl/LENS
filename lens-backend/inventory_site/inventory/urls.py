@@ -5,6 +5,7 @@ from inventory import views
 urlpatterns = [
     path("", views.inventory_request_view, name="inventory_form"),
     path("api/tasks/run/", views.run_task_api, name="run_task_api"),
+    path("api/tasks/run-stream/", views.run_task_stream, name="run_task_stream"),
     path("api/aws/vpcs/", views.aws_vpcs_api, name="aws_vpcs_api"),
     path("api/aws/subnets/", views.aws_subnets_api, name="aws_subnets_api"),
     path("api/aws/ecr-repos/", views.aws_ecr_repos_api, name="aws_ecr_repos_api"),

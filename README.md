@@ -1,6 +1,6 @@
 # Automation Backend
 
-This project exposes multiple infrastructure automation scripts (AWS inventory exports, VPC migration helpers, classic AWS↔GCP VPN planning, etc.) through a unified Django UI and API. Each task produces downloadable artifacts (XLSX, Terraform bundles, text plans, ZIP archives), and new scripts can be plugged in through the shared automation registry.  Standalone CLI wrappers for those tasks now live under `feature/`, so every script shares a consistent entry point (`python -m feature.<module>`).
+This project exposes multiple infrastructure automation scripts (AWS inventory exports, VPC migration helpers, HA AWS↔GCP VPN planning, etc.) through a unified Django UI and API. Each task produces downloadable artifacts (XLSX, Terraform bundles, text plans, ZIP archives), and new scripts can be plugged in through the shared automation registry.  Standalone CLI wrappers for those tasks now live under `feature/`, so every script shares a consistent entry point (`python -m feature.<module>`).
 
 ## Prerequisites
 
@@ -89,28 +89,6 @@ curl -X POST http://127.0.0.1:8000/api/tasks/run/ \
 
 Optional payload keys include `subnet_name_map` / `subnet_cidr_map` JSON overrides. Every response contains a single ZIP artifact (Terraform bundle + checks) and the captured `logs`.
 
-#### Classic VPN task example
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/tasks/run/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task_id": "classic_vpn",
-    "data": {
-      "access_key": "AKIA...",
-      "secret_key": "...",
-      "aws_region": "us-east-1",
-      "aws_vpc_id": "vpc-123456",
-      "gcp_service_key": "<service-account JSON or base64 JSON>",
-      "gcp_project": "my-gcp-project",
-      "gcp_region": "us-east1",
-      "gcp_network": "central-network"
-    }
-  }'
-```
-
-The VPN task responds with a Markdown plan, a Terraform-style sample snippet, and a JSON context document so you can review the proposed IPSec tunnel before executing changes.
-
 ### AWS/GCP helper endpoints
 
 Use these to populate dropdowns when building UIs:
@@ -186,7 +164,7 @@ npm run dev
 
 The dev server proxies `/api/*` requests to http://127.0.0.1:8000, so keep the Django server running while testing.
 
-The React sample now exposes three cards (“VPC Terraform Toolkit”, “AWS Inventory Export”, and “Classic VPN Builder”). All views share the AWS credential block; the Terraform view auto-loads VPCs/subnets, the Inventory view offers checkbox-based multi-region/resource selection with date pickers and progress bars, and the VPN builder adds service-account file upload plus GCP region/network pickers before producing a Markdown/Terraform-ready plan.
+The React sample now exposes four cards (“VPC Terraform Toolkit”, “AWS Inventory Export”, “HA VPN Builder”, and “ECR to Artifact Registry”). All views share the AWS credential block; the Terraform view auto-loads VPCs/subnets, the Inventory view offers checkbox-based multi-region/resource selection with date pickers and progress bars, the HA VPN builder adds service-account file upload plus GCP region/network pickers before producing artifacts, and the ECR workflow orchestrates repository migrations.
 
 ## CLI usage (unchanged)
 
@@ -195,10 +173,6 @@ cd lens-backend
 # Run any feature script directly (or use python -m feature.<script>)
 python3 -m feature.xlsx_inventory --access-key ... --secret-key ... --regions us-east-1 --resources all
 python3 -m feature.terraform_vpc --aws-region us-east-1 --aws-vpc-id vpc-123456 --mode generate-terraform ...
-python3 -m feature.classic_vpn --aws-region us-east-1 --aws-vpc-id vpc-123456 \
-  --access-key ... --secret-key ... \
-  --gcp-service-key /path/to/key.json --gcp-project my-gcp-project \
-  --gcp-region us-east1 --gcp-network central-network
 ```
 
 CLI entry points delegate to the same shared services as the web/API layer, so adding a new script is as simple as dropping it into `feature/`.

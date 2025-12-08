@@ -1,0 +1,95 @@
+{
+  "aws_tunnels": [
+    {
+      "bgp_asn": 64513,
+      "customer_inside_ip": "169.254.73.74",
+      "outside_ip": "13.232.248.19",
+      "psk": "Wv7wZafAiJY04boBnQZo5_hWI4jF.QR8",
+      "vpn_inside_ip": "169.254.73.73"
+    },
+    {
+      "bgp_asn": 64513,
+      "customer_inside_ip": "169.254.206.182",
+      "outside_ip": "52.66.124.32",
+      "psk": "gkcM4FnnQBF5gbeu3MdRARgXQpdiXPCV",
+      "vpn_inside_ip": "169.254.206.181"
+    },
+    {
+      "bgp_asn": 64513,
+      "customer_inside_ip": "169.254.219.222",
+      "outside_ip": "13.204.122.219",
+      "psk": "axO3D57qMU7anZjTBQvB0FZ0MTRzCiLa",
+      "vpn_inside_ip": "169.254.219.221"
+    },
+    {
+      "bgp_asn": 64513,
+      "customer_inside_ip": "169.254.30.122",
+      "outside_ip": "43.204.117.35",
+      "psk": "G7RvABeP8dipaL_3O4k.hdB5TmPoiTvY",
+      "vpn_inside_ip": "169.254.30.121"
+    }
+  ],
+  "config": {
+    "aws_asn": 64513,
+    "aws_region": "ap-south-1",
+    "aws_vpc_id": "vpc-079e1fae6b2720b55",
+    "gcp_asn": 64512,
+    "gcp_network": "rohit-automation-vpc",
+    "gcp_project": "ccd-poc-project",
+    "gcp_region": "asia-south1"
+  },
+  "prefix": "lens-test-poc",
+  "resources": {
+    "aws_cgw_ids": [
+      "cgw-0ae01080b2f631624",
+      "cgw-068225278068e3d27"
+    ],
+    "aws_vgw_id": "vgw-024183be7b4e34568",
+    "aws_vpn_ids": [
+      "vpn-0095c98d478507a0e",
+      "vpn-03045cc01ae1b47b2"
+    ],
+    "gcp_ha_gateway": "lens-test-poc-ha-gateway",
+    "gcp_interface_ips": [
+      "34.157.87.127",
+      "34.177.74.59"
+    ],
+    "gcp_peer_gateway": "lens-test-poc-aws-peer-gateway",
+    "gcp_router": "lens-test-poc-router",
+    "gcp_tunnels": [
+      {
+        "aws_interface": 0,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/vpnTunnels/lens-test-poc-tunnel-0",
+        "name": "lens-test-poc-tunnel-0",
+        "peer_bgp_ip": "169.254.73.73",
+        "router_bgp_ip": "169.254.73.74"
+      },
+      {
+        "aws_interface": 1,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/vpnTunnels/lens-test-poc-tunnel-1",
+        "name": "lens-test-poc-tunnel-1",
+        "peer_bgp_ip": "169.254.206.181",
+        "router_bgp_ip": "169.254.206.182"
+      },
+      {
+        "aws_interface": 2,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/vpnTunnels/lens-test-poc-tunnel-2",
+        "name": "lens-test-poc-tunnel-2",
+        "peer_bgp_ip": "169.254.219.221",
+        "router_bgp_ip": "169.254.219.222"
+      },
+      {
+        "aws_interface": 3,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/ccd-poc-project/regions/asia-south1/vpnTunnels/lens-test-poc-tunnel-3",
+        "name": "lens-test-poc-tunnel-3",
+        "peer_bgp_ip": "169.254.30.121",
+        "router_bgp_ip": "169.254.30.122"
+      }
+    ]
+  },
+  "timestamp": "2025-12-07T15:26:32.994984+00:00"
+}

@@ -44,6 +44,63 @@ async function postJson(url, body) {
   return payload;
 }
 
+async function runStreamingTask(url, body, onLog) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch (err) {
+      /* ignore */
+    }
+    const message = payload?.error || `Request failed with status ${res.status}`;
+    throw new Error(message);
+  }
+  if (!res.body) {
+    throw new Error('Streaming not supported in this browser.');
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex;
+    // Process newline-delimited JSON events
+    while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+      const chunk = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!chunk) {
+        continue;
+      }
+      let event;
+      try {
+        event = JSON.parse(chunk);
+      } catch (err) {
+        continue;
+      }
+      if (event.event === 'log') {
+        if (onLog && event.message) {
+          onLog(event.message);
+        }
+      } else if (event.event === 'result') {
+        if (event.status !== 'ok') {
+          throw new Error(event.error || 'Task failed.');
+        }
+        return event;
+      }
+    }
+  }
+  throw new Error('Stream ended unexpectedly.');
+}
+
 const AWS_REGIONS = [
   { id: 'us-east-1', label: 'US East (N. Virginia)' },
   { id: 'us-east-2', label: 'US East (Ohio)' },
@@ -210,6 +267,11 @@ const getGcpRegionDisplay = (regionId) => {
   return label ? formatRegionDisplay(regionId, label) : regionId.toUpperCase();
 };
 
+const filterSubnetsByRegion = (subnets, region) => {
+  if (!region) return subnets;
+  return (subnets || []).filter((subnet) => (subnet.region || '').toLowerCase() === region.toLowerCase());
+};
+
 const App = () => {
   const [awsAccess, setAwsAccess] = useState('');
   const [awsSecret, setAwsSecret] = useState('');
@@ -239,6 +301,8 @@ const App = () => {
   const [invLoading, setInvLoading] = useState(false);
   const [invStatus, setInvStatus] = useState('');
   const invProgressTimer = useRef(null);
+  const gcpSubnetCacheRef = useRef(new Map());
+  const gcpSubnetRequestRef = useRef(0);
   const [view, setView] = useState('home');
   const [ecrGcpProject, setEcrGcpProject] = useState('');
   const [ecrGcpRegion, setEcrGcpRegion] = useState('us-central1');
@@ -262,18 +326,22 @@ const App = () => {
   const [vpnNetworkError, setVpnNetworkError] = useState('');
   const [vpnGcpSubnets, setVpnGcpSubnets] = useState([]);
   const [vpnSubnetError, setVpnSubnetError] = useState('');
-  const [vpnLogs, setVpnLogs] = useState('');
-  const [vpnError, setVpnError] = useState('');
-  const [vpnArtifacts, setVpnArtifacts] = useState([]);
   const [selectedAwsSubnets, setSelectedAwsSubnets] = useState([]);
   const [selectedGcpSubnets, setSelectedGcpSubnets] = useState([]);
   const [vpnServiceFileName, setVpnServiceFileName] = useState('');
   const [vpnProjectOptions, setVpnProjectOptions] = useState([]);
   const [vpnProjectError, setVpnProjectError] = useState('');
+  const [vpnSubnetsLoading, setVpnSubnetsLoading] = useState(false);
+  const [haAwsAsn, setHaAwsAsn] = useState('64513');
+  const [haGcpAsn, setHaGcpAsn] = useState('64512');
+  const [haPrefix, setHaPrefix] = useState('');
+  const [haLogs, setHaLogs] = useState('');
+  const [haError, setHaError] = useState('');
+  const [haArtifacts, setHaArtifacts] = useState([]);
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
-  useArtifactCleanup(vpnArtifacts);
+  useArtifactCleanup(haArtifacts);
   useArtifactCleanup(ecrArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
@@ -286,9 +354,16 @@ const App = () => {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
       .slice(0, 61);
+  const arraysEqual = (a, b) => a.length === b.length && a.every((value, idx) => value === b[idx]);
 
   const subnetRows = useMemo(() => subnets, [subnets]);
-  const gcpSubnetOptions = vpnGcpSubnets;
+  const gcpSubnetOptions = useMemo(() => {
+    const filtered = filterSubnetsByRegion(vpnGcpSubnets, vpnGcpRegion);
+    return filtered.length ? filtered : vpnGcpSubnets;
+  }, [vpnGcpSubnets, vpnGcpRegion]);
+  const vpnViews = ['ha_vpn'];
+  const isVpnView = vpnViews.includes(view);
+  const vpnLegendLabel = 'HA VPN';
 
   useEffect(() => {
     if (!resolvedRegion) return;
@@ -455,7 +530,7 @@ const App = () => {
   }, [ecrServiceKey, view, ecrGcpProject]);
 
   useEffect(() => {
-    if (view !== 'classic_vpn') {
+    if (!isVpnView) {
       setVpnProjectOptions([]);
       setVpnProjectError('');
       return;
@@ -486,10 +561,10 @@ const App = () => {
     return () => {
       clearTimeout(timer);
     };
-  }, [vpnServiceKey, view]);
+  }, [vpnServiceKey, view, isVpnView]);
 
   useEffect(() => {
-    if (view !== 'classic_vpn') {
+    if (!isVpnView) {
       return;
     }
     if (!vpnServiceKey.trim()) {
@@ -510,12 +585,12 @@ const App = () => {
           service_key: vpnServiceKey,
           gcp_project: trimmedProject,
         });
-        setVpnGcpNetworks(res.networks || []);
+        const networks = res.networks || [];
+        setVpnGcpNetworks(networks);
         setVpnNetworkError('');
-        if (!vpnGcpNetwork && res.networks && res.networks.length) {
-          setVpnGcpNetwork(res.networks[0].name);
-        } else if (vpnGcpNetwork && !(res.networks || []).some((n) => n.name === vpnGcpNetwork)) {
-          setVpnGcpNetwork(res.networks?.[0]?.name || '');
+        const stillValid = vpnGcpNetwork && networks.some((n) => n.name === vpnGcpNetwork);
+        if (!stillValid) {
+          setVpnGcpNetwork('');
         }
       } catch (err) {
         setVpnNetworkError(err.message || String(err));
@@ -526,42 +601,89 @@ const App = () => {
     return () => {
       clearTimeout(timer);
     };
-  }, [vpnServiceKey, vpnGcpProject, vpnGcpNetwork, view]);
+  }, [vpnServiceKey, vpnGcpProject, vpnGcpNetwork, view, isVpnView]);
 
   useEffect(() => {
-    if (view !== 'classic_vpn') {
-      return;
-    }
-    if (!vpnServiceKey.trim() || !vpnGcpProject.trim() || !vpnGcpNetwork) {
+    const requestId = ++gcpSubnetRequestRef.current;
+    if (!isVpnView) {
       setVpnGcpSubnets([]);
       setSelectedGcpSubnets([]);
       setVpnSubnetError('');
+      setVpnSubnetsLoading(false);
       return;
     }
-    setVpnGcpSubnets([]);
-    setSelectedGcpSubnets([]);
+    const trimmedProject = vpnGcpProject.trim();
+    if (!vpnServiceKey.trim() || !trimmedProject || !vpnGcpNetwork) {
+      setVpnGcpSubnets([]);
+      setSelectedGcpSubnets([]);
+      setVpnSubnetError('');
+      setVpnSubnetsLoading(false);
+      return;
+    }
+    const cacheKey = `${trimmedProject}::${vpnGcpNetwork}`;
+    const cached = gcpSubnetCacheRef.current.get(cacheKey);
+    if (cached) {
+      setVpnGcpSubnets(cached);
+      setSelectedGcpSubnets(cached.map((entry) => entry.name));
+      setVpnSubnetError('');
+      setVpnSubnetsLoading(false);
+      return;
+    }
+    setVpnSubnetsLoading(true);
     setVpnSubnetError('');
     const timer = setTimeout(async () => {
       try {
         const res = await postJson('/api/gcp/network/', {
           service_key: vpnServiceKey,
-          gcp_project: vpnGcpProject.trim(),
+          gcp_project: trimmedProject,
           gcp_network: vpnGcpNetwork,
         });
         const subnets = res.network?.subnetworks || [];
+        gcpSubnetCacheRef.current.set(cacheKey, subnets);
+        if (gcpSubnetRequestRef.current !== requestId) {
+          return;
+        }
+        const filtered = filterSubnetsByRegion(subnets, vpnGcpRegion);
         setVpnGcpSubnets(subnets);
-        setSelectedGcpSubnets(subnets.map((entry) => entry.name));
+        setSelectedGcpSubnets((filtered.length ? filtered : subnets).map((entry) => entry.name));
         setVpnSubnetError('');
       } catch (err) {
+        if (gcpSubnetRequestRef.current !== requestId) {
+          return;
+        }
         setVpnSubnetError(err.message || String(err));
+        gcpSubnetCacheRef.current.delete(cacheKey);
         setVpnGcpSubnets([]);
         setSelectedGcpSubnets([]);
+      } finally {
+        if (gcpSubnetRequestRef.current === requestId) {
+          setVpnSubnetsLoading(false);
+        }
       }
     }, debounceDelay);
     return () => {
       clearTimeout(timer);
     };
-  }, [view, vpnServiceKey, vpnGcpProject, vpnGcpNetwork]);
+  }, [view, vpnServiceKey, vpnGcpProject, vpnGcpNetwork, vpnGcpRegion, isVpnView]);
+  useEffect(() => {
+    if (!vpnGcpSubnets.length) {
+      return;
+    }
+    const allowed = filterSubnetsByRegion(vpnGcpSubnets, vpnGcpRegion);
+    if (!allowed.length) {
+      setSelectedGcpSubnets([]);
+      return;
+    }
+    const allowedNames = new Set(allowed.map((entry) => entry.name));
+    setSelectedGcpSubnets((prev) => {
+      const next = prev.filter((name) => allowedNames.has(name));
+      if (next.length) {
+        return arraysEqual(next, prev) ? prev : next;
+      }
+      const allAllowed = Array.from(allowedNames);
+      return arraysEqual(prev, allAllowed) ? prev : allAllowed;
+    });
+  }, [vpnGcpRegion, vpnGcpSubnets]);
   useEffect(() => {
     if (!resolvedRegion) {
       return;
@@ -600,7 +722,7 @@ const App = () => {
 
   const runTerraformTask = async () => {
     setTfError('');
-    setTfLogs('');
+    setTfLogs('Submitting Terraform bundle request...\n');
     setTfArtifacts([]);
     if (!authReady || !selectedVpc || !gcpProject.trim() || !gcpNetwork.trim() || !gcpRegion.trim()) {
       setTfError('AWS creds, VPC, and GCP fields are required.');
@@ -608,21 +730,24 @@ const App = () => {
     }
     try {
       const overrides = collectOverrides();
-      const res = await postJson('/api/tasks/run/', {
-        task_id: 'terraform_vpc',
-        data: {
-          access_key: awsAccess.trim(),
-          secret_key: awsSecret.trim(),
-          aws_region: resolvedRegion,
-          aws_vpc_id: selectedVpc,
-          gcp_project: gcpProject.trim(),
-          gcp_network: gcpNetwork.trim(),
-          gcp_region_fallback: gcpRegion.trim(),
-          ...overrides,
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        {
+          task_id: 'terraform_vpc',
+          data: {
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+            aws_region: resolvedRegion,
+            aws_vpc_id: selectedVpc,
+            gcp_project: gcpProject.trim(),
+            gcp_network: gcpNetwork.trim(),
+            gcp_region_fallback: gcpRegion.trim(),
+            ...overrides,
+          },
         },
-      });
-      setTfLogs(res.logs || '');
-      setTfArtifacts(createDownloadEntries(res.artifacts || []));
+        (message) => setTfLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setTfArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setTfError(err.message || String(err));
     }
@@ -699,52 +824,64 @@ const App = () => {
     setVpnNetworkError('');
     setVpnGcpSubnets([]);
     setVpnSubnetError('');
+    setHaLogs('');
+    setHaArtifacts([]);
+    setHaError('');
   };
 
-  const runClassicVpnTask = async () => {
-    setVpnError('');
-    setVpnLogs('');
-    setVpnArtifacts([]);
+  const runHaVpnTask = async () => {
+    setHaError('');
+    setHaLogs('Submitting HA VPN setup request...\n');
+    setHaArtifacts([]);
     if (!authReady || !selectedVpc || !vpnServiceKey.trim() || !vpnGcpProject.trim() || !vpnGcpNetwork) {
-      setVpnError('AWS creds, selected VPC, service key, project, and GCP network are required.');
+      setHaError('AWS creds, selected VPC, service key, project, and GCP network are required.');
       return;
     }
     if (!selectedAwsSubnets.length || !selectedGcpSubnets.length) {
-      setVpnError('Select at least one subnet in both AWS and GCP.');
+      setHaError('Select at least one subnet in both AWS and GCP.');
       return;
     }
+    const awsAsnValue = Number(haAwsAsn) || 64513;
+    const gcpAsnValue = Number(haGcpAsn) || 64512;
     try {
-      const res = await postJson('/api/tasks/run/', {
-        task_id: 'classic_vpn',
-        data: {
-          access_key: awsAccess.trim(),
-          secret_key: awsSecret.trim(),
-          aws_region: resolvedRegion,
-          aws_vpc_id: selectedVpc,
-          gcp_service_key: vpnServiceKey,
-          gcp_project: vpnGcpProject.trim(),
-          gcp_region: vpnGcpRegion,
-          gcp_network: vpnGcpNetwork,
-          aws_subnets: selectedAwsSubnets,
-          gcp_subnets: selectedGcpSubnets,
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        {
+          task_id: 'ha_vpn',
+          data: {
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+            aws_region: resolvedRegion,
+            aws_vpc_id: selectedVpc,
+            gcp_service_key: vpnServiceKey,
+            gcp_project: vpnGcpProject.trim(),
+            gcp_region: vpnGcpRegion,
+            gcp_network: vpnGcpNetwork,
+            aws_asn: awsAsnValue,
+            gcp_asn: gcpAsnValue,
+            name_prefix: haPrefix.trim(),
+            aws_subnets: selectedAwsSubnets,
+            gcp_subnets: selectedGcpSubnets,
+          },
         },
-      });
-      setVpnLogs((prev) => mergeBackendLogs(prev, res.logs));
-      setVpnArtifacts(createDownloadEntries(res.artifacts || []));
+        (message) => setHaLogs((prev) => mergeBackendLogs(prev, message)),
+      );
+      setHaArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
-      setVpnError(err.message || String(err));
-      if (err.logs) {
-        setVpnLogs((prev) => mergeBackendLogs(prev, err.logs));
-      }
+      setHaError(err.message || String(err));
     }
   };
 
   const runEcrMigration = async () => {
     setEcrError('');
-    setEcrLogs('');
+    setEcrLogs('Submitting ECR to Artifact Registry migration...\n');
     setEcrArtifacts([]);
     if (!awsAccess.trim() || !awsSecret.trim() || !resolvedRegion || !ecrGcpProject.trim() || !ecrGcpRegion.trim()) {
       setEcrError('AWS creds, AWS region, GCP project, and GCP region are required.');
+      return;
+    }
+    if (!ecrServiceKey.trim()) {
+      setEcrError('Upload a GCP service account JSON key.');
       return;
     }
     if (!selectedEcrRepos.length) {
@@ -752,25 +889,26 @@ const App = () => {
       return;
     }
     try {
-      const res = await postJson('/api/tasks/run/', {
-        task_id: 'ecr_migration',
-        data: {
-          access_key: awsAccess.trim(),
-          secret_key: awsSecret.trim(),
-          aws_region: resolvedRegion,
-          gcp_project: ecrGcpProject.trim(),
-          gcp_region: ecrGcpRegion.trim(),
-          workers: Math.min(Number(ecrWorkers) || 1, ecrMaxWorkers),
-          aws_repos: selectedEcrRepos,
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        {
+          task_id: 'ecr_migration',
+          data: {
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+            aws_region: resolvedRegion,
+            gcp_project: ecrGcpProject.trim(),
+            gcp_region: ecrGcpRegion.trim(),
+            workers: Math.min(Number(ecrWorkers) || 1, ecrMaxWorkers),
+            aws_repos: selectedEcrRepos,
+            gcp_service_key: ecrServiceKey,
+          },
         },
-      });
-      setEcrLogs((res.logs || '').trim());
-      setEcrArtifacts(createDownloadEntries(res.artifacts || []));
+        (message) => setEcrLogs((prev) => mergeBackendLogs(prev, message)),
+      );
+      setEcrArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setEcrError(err.message || String(err));
-      if (err.logs) {
-        setEcrLogs((err.logs || '').trim());
-      }
     }
   };
 
@@ -865,20 +1003,6 @@ const App = () => {
     setSelectedAwsSubnets([]);
   };
 
-  const toggleGcpSubnetSelection = (subnetName) => {
-    setSelectedGcpSubnets((prev) =>
-      prev.includes(subnetName) ? prev.filter((id) => id !== subnetName) : [...prev, subnetName]
-    );
-  };
-
-  const selectAllGcpSubnets = () => {
-    setSelectedGcpSubnets(gcpSubnetOptions.map((subnet) => subnet.name));
-  };
-
-  const clearGcpSubnets = () => {
-    setSelectedGcpSubnets([]);
-  };
-
   const currentInvLogText = invLogs || (invLoading ? 'Inventory is running, waiting for server logs...' : 'Logs will appear here once a run starts.');
 
   return (
@@ -899,9 +1023,9 @@ const App = () => {
             <button onClick={() => setView('inventory')}>Run Inventory</button>
           </div>
           <div className="task-card">
-            <h2>Classic VPN Builder</h2>
-            <p>Plan a site-to-site IPSec tunnel between AWS and GCP VPC networks.</p>
-            <button onClick={() => setView('classic_vpn')}>Build VPN</button>
+            <h2>HA VPN Builder</h2>
+            <p>Design a redundant AWS &lt;-&gt; GCP HA VPN with dual tunnels and BGP routing.</p>
+            <button onClick={() => setView('ha_vpn')}>Plan HA VPN</button>
           </div>
           <div className="task-card">
             <h2>ECR to Artifact Registry</h2>
@@ -917,7 +1041,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'classic_vpn', 'ecr_migration'].includes(view)) && (
+      {(['terraform', 'inventory', 'ha_vpn', 'ecr_migration'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -928,7 +1052,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'classic_vpn', 'ecr_migration'].includes(view) && (
+        {['terraform', 'ha_vpn', 'ecr_migration'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -948,7 +1072,7 @@ const App = () => {
             )}
           </>
         )}
-        {['terraform', 'classic_vpn'].includes(view) && (
+        {['terraform', 'ha_vpn'].includes(view) && (
           <>
             <small>VPCs load automatically when all fields above are populated.</small>
             <label>
@@ -967,7 +1091,7 @@ const App = () => {
             {view === 'terraform' && subnetError && <div className="error">{subnetError}</div>}
           </>
         )}
-        {view === 'classic_vpn' && subnetRows.length > 0 && (
+        {isVpnView && subnetRows.length > 0 && (
           <div className="aws-subnet-selector">
             <div className="label-row">
               <label>AWS Subnets</label>
@@ -980,6 +1104,9 @@ const App = () => {
                 </button>
               </div>
             </div>
+            <small>
+              These subnets determine which route tables receive VGW propagation on the AWS side. Leave all unchecked to skip enabling propagation automatically.
+            </small>
             <div className="checkbox-grid">
               {subnetRows.map((subnet) => (
                 <label key={subnet.id} className="checkbox-item">
@@ -1075,14 +1202,22 @@ const App = () => {
       </fieldset>
       )}
 
-      {view === 'classic_vpn' && (
+      {isVpnView && (
       <>
-        <fieldset>
-          <legend>GCP Credentials & Network</legend>
-          <label>
-            Upload Service Account JSON
-            <input type="file" accept="application/json,.json" onChange={(e) => handleServiceKeyFile(e.target.files?.[0])} />
-          </label>
+      <fieldset className={vpnSubnetsLoading ? 'fieldset-overlay' : undefined}>
+        <legend>{vpnLegendLabel} - GCP Credentials & Network</legend>
+        {vpnSubnetsLoading && (
+          <div className="loading-overlay">
+            <div>
+              <strong>Loading GCP subnets…</strong>
+              <small>Please wait until loading completes before changing region or network.</small>
+            </div>
+          </div>
+        )}
+        <label>
+          Upload Service Account JSON
+          <input type="file" accept="application/json,.json" onChange={(e) => handleServiceKeyFile(e.target.files?.[0])} />
+        </label>
           {vpnServiceFileName && (
             <small className="file-indicator">
               Loaded: {vpnServiceFileName}
@@ -1108,79 +1243,68 @@ const App = () => {
             <div className="info-callout">No GCP projects detected for this service account.</div>
           )}
           {vpnProjectError && <div className="error">{vpnProjectError}</div>}
-          <label>
-            GCP Region
-            <select value={vpnGcpRegion} onChange={(e) => setVpnGcpRegion(e.target.value)}>
-              {GCP_REGIONS.map((region) => (
-                <option key={region.id} value={region.id}>
-                  {region.display}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            GCP VPC Network
-            <select value={vpnGcpNetwork} onChange={(e) => setVpnGcpNetwork(e.target.value)}>
-              <option value="">-- Select network --</option>
-              {vpnGcpNetworks.map((network) => (
-                <option key={network.name} value={network.name}>
-                  {network.name} {network.auto_create_subnetworks ? '(auto)' : ''}
-                </option>
+        <label>
+          GCP Region
+          <select value={vpnGcpRegion} onChange={(e) => setVpnGcpRegion(e.target.value)} disabled={vpnSubnetsLoading}>
+            {GCP_REGIONS.map((region) => (
+              <option key={region.id} value={region.id}>
+                {region.display}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          GCP VPC Network
+          <select value={vpnGcpNetwork} onChange={(e) => setVpnGcpNetwork(e.target.value)} disabled={vpnSubnetsLoading}>
+            <option value="">-- Select network --</option>
+            {vpnGcpNetworks.map((network) => (
+              <option key={network.name} value={network.name}>
+                {network.name} {network.auto_create_subnetworks ? '(auto)' : ''}
+              </option>
               ))}
             </select>
           </label>
           {vpnNetworkError && <div className="error">{vpnNetworkError}</div>}
-          {!vpnNetworkError && vpnGcpNetwork && !gcpSubnetOptions.length && (
-            <small>Loading subnets for {vpnGcpNetwork}...</small>
+          {vpnSubnetsLoading && !vpnSubnetError && (
+            <small>Loading subnets for {vpnGcpNetwork || 'selected network'}...</small>
           )}
           {vpnSubnetError && <div className="error">{vpnSubnetError}</div>}
-          {gcpSubnetOptions.length > 0 && (
-            <div className="aws-subnet-selector">
-              <div className="label-row">
-                <label>GCP Subnets</label>
-                <div className="pill-actions">
-                  <button type="button" onClick={selectAllGcpSubnets} disabled={!gcpSubnetOptions.length}>
-                    Select all
-                  </button>
-                  <button type="button" onClick={clearGcpSubnets} disabled={!selectedGcpSubnets.length}>
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <div className="checkbox-grid">
-                {gcpSubnetOptions.map((subnet) => (
-                  <label key={subnet.name} className="checkbox-item">
-                    <input
-                      type="checkbox"
-                      checked={selectedGcpSubnets.includes(subnet.name)}
-                      onChange={() => toggleGcpSubnetSelection(subnet.name)}
-                    />
-                    <span>
-                      {subnet.name} ({subnet.cidr || 'CIDR unknown'}) @ {subnet.region}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
+          {view === 'ha_vpn' && gcpSubnetOptions.length > 0 && (
+            <small>All discovered GCP subnets will be included automatically for HA VPN planning.</small>
           )}
         </fieldset>
-        <fieldset>
-          <legend>Classic VPN Plan</legend>
-          <button onClick={runClassicVpnTask} disabled={!selectedVpc || !authReady}>
-            Generate VPN Plan
-          </button>
-          {vpnError && <div className="error">{vpnError}</div>}
-          <h3>Logs</h3>
-          <pre>{vpnLogs}</pre>
-          <h3>Artifacts</h3>
-          <div className="artifacts">
-            {vpnArtifacts.map((artifact) => (
-              <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
-                Download {artifact.filename}
-              </a>
-            ))}
-          </div>
-        </fieldset>
+          <fieldset>
+            <legend>HA VPN Plan</legend>
+            <label>
+              AWS ASN
+              <input type="number" min="1" value={haAwsAsn} onChange={(e) => setHaAwsAsn(e.target.value)} />
+            </label>
+            <label>
+              GCP ASN
+              <input type="number" min="1" value={haGcpAsn} onChange={(e) => setHaGcpAsn(e.target.value)} />
+            </label>
+          <label>
+            Resource Name Prefix (optional)
+            <input value={haPrefix} onChange={(e) => setHaPrefix(e.target.value)} placeholder="ha-shared-vpn" />
+          </label>
+            <div className="info-callout">
+              This action provisions AWS and GCP HA VPN resources (VGWs, gateways, tunnels, and BGP sessions). Ensure the supplied credentials have the required permissions.
+            </div>
+            <button onClick={runHaVpnTask} disabled={!selectedVpc || !authReady}>
+              Provision HA VPN
+            </button>
+            {haError && <div className="error">{haError}</div>}
+            <h3>Logs</h3>
+            <pre>{haLogs}</pre>
+            <h3>Artifacts</h3>
+            <div className="artifacts">
+              {haArtifacts.map((artifact) => (
+                <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+                  Download {artifact.filename}
+                </a>
+              ))}
+            </div>
+          </fieldset>
       </>
       )}
 
@@ -1281,6 +1405,10 @@ const App = () => {
           />
           <small>Max recommended: {ecrMaxWorkers}</small>
         </label>
+        <div className="info-callout">
+          This action pulls images from AWS ECR and pushes them into GCP Artifact Registry using Docker and gcloud.
+          Ensure both CLIs are installed on the backend host and the service account has Artifact Registry permissions.
+        </div>
         <button onClick={runEcrMigration} disabled={!authReady}>
           Run Migration
         </button>
