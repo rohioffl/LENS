@@ -6,4 +6,14 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        from .services import aws_task, terraform_task, classic_vpn_task, ecr_migration_task, ha_vpn_task  # noqa: F401
+        # Import task modules to ensure they register with the automation registry.
+        import importlib
+
+        for module in (
+            "inventory.services.aws_task",
+            "inventory.services.terraform_task",
+            "inventory.services.classic_vpn_task",
+            "inventory.services.ecr_migration_task",
+            "inventory.services.ha_vpn_task",
+        ):
+            importlib.import_module(module)
