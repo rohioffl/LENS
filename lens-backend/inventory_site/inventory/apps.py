@@ -6,14 +6,11 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        from importlib import import_module
-
-        # Always use the canonical package path for this app to avoid environment-specific prefixes.
-        for tail in (
-            "aws_task",
-            "terraform_task",
-            "classic_vpn_task",
-            "ecr_migration_task",
-            "ha_vpn_task",
-        ):
-            import_module(f"inventory.services.{tail}")
+        # Import tasks directly from the local services package to avoid path ambiguity on different machines.
+        from .services import (
+            aws_task,  # noqa: F401
+            terraform_task,  # noqa: F401
+            classic_vpn_task,  # noqa: F401
+            ecr_migration_task,  # noqa: F401
+            ha_vpn_task,  # noqa: F401
+        )
