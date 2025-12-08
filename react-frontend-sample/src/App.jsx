@@ -280,6 +280,8 @@ const App = () => {
   const [vpcs, setVpcs] = useState([]);
   const [selectedVpc, setSelectedVpc] = useState('');
   const [subnets, setSubnets] = useState([]);
+  const [detectedAwsAsn, setDetectedAwsAsn] = useState(null);
+  const [attachedVgw, setAttachedVgw] = useState(null);
   const [vpcError, setVpcError] = useState('');
   const [subnetError, setSubnetError] = useState('');
 
@@ -333,6 +335,7 @@ const App = () => {
   const [classicLogs, setClassicLogs] = useState('');
   const [classicError, setClassicError] = useState('');
   const [classicArtifacts, setClassicArtifacts] = useState([]);
+  const [classicAsnError, setClassicAsnError] = useState('');
   const [selectedAwsSubnets, setSelectedAwsSubnets] = useState([]);
   const [selectedGcpSubnets, setSelectedGcpSubnets] = useState([]);
   const [vpnServiceFileName, setVpnServiceFileName] = useState('');
@@ -345,6 +348,7 @@ const App = () => {
   const [haLogs, setHaLogs] = useState('');
   const [haError, setHaError] = useState('');
   const [haArtifacts, setHaArtifacts] = useState([]);
+  const [haAsnError, setHaAsnError] = useState('');
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
@@ -415,6 +419,8 @@ const App = () => {
     if (!authReady || !selectedVpc) {
       setSubnets([]);
       setSelectedAwsSubnets([]);
+      setDetectedAwsAsn(null);
+      setAttachedVgw(null);
       return;
     }
     const controller = new AbortController();
@@ -436,14 +442,25 @@ const App = () => {
         setSubnetError('');
         if (res.attached_vgw?.asn) {
           const asn = String(res.attached_vgw.asn);
-          setHaAwsAsn(asn);
-          setClassicAwsAsn(asn);
+          const { awsVal, gcpVal } = ensureDifferentAsn(asn, haGcpAsn);
+          const asnStr = String(awsVal);
+          setHaAwsAsn(asnStr);
+          setClassicAwsAsn(asnStr);
+          setHaGcpAsn(String(gcpVal));
+          setClassicGcpAsn(String(gcpVal));
+          setDetectedAwsAsn(asnStr);
+          setAttachedVgw(res.attached_vgw);
+        } else {
+          setDetectedAwsAsn(null);
+          setAttachedVgw(null);
         }
       } catch (err) {
         if (!controller.signal.aborted) {
           setSubnetError(err.message || String(err));
           setSubnets([]);
           setSelectedAwsSubnets([]);
+          setDetectedAwsAsn(null);
+          setAttachedVgw(null);
         }
       }
     }, debounceDelay);
@@ -1067,6 +1084,74 @@ const App = () => {
     setSelectedAwsSubnets([]);
   };
 
+  const minAsn = 64512;
+  const maxAsn = 65534;
+  const clampAsn = (value, fallback = minAsn) => {
+    const num = parseInt(value, 10);
+    if (Number.isNaN(num)) return fallback;
+    if (num < minAsn) return minAsn;
+    if (num > maxAsn) return maxAsn;
+    return num;
+  };
+  const ensureDifferentAsn = (awsAsn, gcpAsn) => {
+    const awsVal = clampAsn(awsAsn);
+    let gcpVal = clampAsn(gcpAsn);
+    if (awsVal === gcpVal) {
+      gcpVal = awsVal + 1 <= maxAsn ? awsVal + 1 : awsVal - 1;
+    }
+    return { awsVal, gcpVal };
+  };
+
+  const handleHaAwsAsnBlur = () => {
+    const clampedAws = clampAsn(haAwsAsn, haAwsAsn);
+    const clampedGcp = clampAsn(haGcpAsn, haGcpAsn);
+    setHaAwsAsn(String(clampedAws));
+    if (clampedAws !== parseInt(haAwsAsn, 10)) {
+      setHaAsnError(`AWS ASN adjusted to ${clampedAws} (allowed range: ${minAsn}-${maxAsn}).`);
+    } else if (clampedAws === clampedGcp) {
+      setHaAsnError(`AWS ASN and GCP ASN cannot match. Allowed range: ${minAsn}-${maxAsn}.`);
+    } else {
+      setHaAsnError('');
+    }
+  };
+
+  const handleHaGcpAsnBlur = () => {
+    const clamped = clampAsn(haGcpAsn, haGcpAsn);
+    setHaGcpAsn(String(clamped));
+    if (clamped !== parseInt(haGcpAsn, 10)) {
+      setHaAsnError(`GCP ASN adjusted to ${clamped} (allowed range: ${minAsn}-${maxAsn}).`);
+    } else if (clamped === clampAsn(haAwsAsn)) {
+      setHaAsnError(`AWS ASN and GCP ASN cannot match. Allowed range: ${minAsn}-${maxAsn}.`);
+    } else {
+      setHaAsnError('');
+    }
+  };
+
+  const handleClassicAwsAsnBlur = () => {
+    const clampedAws = clampAsn(classicAwsAsn, classicAwsAsn);
+    const clampedGcp = clampAsn(classicGcpAsn, classicGcpAsn);
+    setClassicAwsAsn(String(clampedAws));
+    if (clampedAws !== parseInt(classicAwsAsn, 10)) {
+      setClassicAsnError(`AWS ASN adjusted to ${clampedAws} (allowed range: ${minAsn}-${maxAsn}).`);
+    } else if (clampedAws === clampedGcp) {
+      setClassicAsnError(`AWS ASN and GCP ASN cannot match. Allowed range: ${minAsn}-${maxAsn}.`);
+    } else {
+      setClassicAsnError('');
+    }
+  };
+
+  const handleClassicGcpAsnBlur = () => {
+    const clamped = clampAsn(classicGcpAsn, classicGcpAsn);
+    setClassicGcpAsn(String(clamped));
+    if (clamped !== parseInt(classicGcpAsn, 10)) {
+      setClassicAsnError(`GCP ASN adjusted to ${clamped} (allowed range: ${minAsn}-${maxAsn}).`);
+    } else if (clamped === clampAsn(classicAwsAsn)) {
+      setClassicAsnError(`AWS ASN and GCP ASN cannot match. Allowed range: ${minAsn}-${maxAsn}.`);
+    } else {
+      setClassicAsnError('');
+    }
+  };
+
   const toggleGcpSubnetSelection = (name) => {
     setSelectedGcpSubnets((prev) =>
       prev.includes(name) ? prev.filter((id) => id !== name) : [...prev, name]
@@ -1352,10 +1437,7 @@ const App = () => {
             <small>Loading subnets for {vpnGcpNetwork || 'selected network'}...</small>
           )}
           {vpnSubnetError && <div className="error">{vpnSubnetError}</div>}
-          {view === 'ha_vpn' && gcpSubnetOptions.length > 0 && (
-            <small>All discovered GCP subnets will be included automatically for HA VPN planning.</small>
-          )}
-          {view === 'classic_vpn' && gcpSubnetOptions.length > 0 && (
+          {gcpSubnetOptions.length > 0 && (
             <div className="aws-subnet-selector">
               <div className="label-row">
                 <label>GCP Subnets</label>
@@ -1368,7 +1450,7 @@ const App = () => {
                   </button>
                 </div>
               </div>
-              <small>Choose which GCP subnetworks to include for tunnel propagation.</small>
+              <small>Choose which GCP subnetworks to include; selected CIDRs will be advertised on the Cloud Router.</small>
               <div className="checkbox-grid">
                 {gcpSubnetOptions.map((subnet) => (
                   <label key={subnet.name} className="checkbox-item">
@@ -1391,16 +1473,40 @@ const App = () => {
               <legend>HA VPN Plan</legend>
               <label>
                 AWS ASN
-                <input type="number" min="1" value={haAwsAsn} onChange={(e) => setHaAwsAsn(e.target.value)} />
+                <input
+                  type="number"
+                  min="1"
+                  value={haAwsAsn}
+                  onChange={(e) => setHaAwsAsn(e.target.value)}
+                  onBlur={handleHaAwsAsnBlur}
+                  disabled={Boolean(detectedAwsAsn)}
+                  title={detectedAwsAsn ? `Detected attached VGW ASN ${detectedAwsAsn}` : undefined}
+                  className={haAsnError ? 'error-input' : undefined}
+                />
               </label>
+              {attachedVgw && (
+                <small className="info-callout">
+                  Using existing VGW {attachedVgw.name ? `${attachedVgw.name} (${attachedVgw.id})` : attachedVgw.id} with ASN {attachedVgw.asn || 'unknown'}. Only one VGW can be attached to a VPC at a time, so we will reuse this gateway.
+                </small>
+              )}
               <label>
                 GCP ASN
-                <input type="number" min="1" value={haGcpAsn} onChange={(e) => setHaGcpAsn(e.target.value)} />
+                <input
+                  type="number"
+                  min={minAsn}
+                  max={maxAsn}
+                  value={haGcpAsn}
+                  onChange={(e) => setHaGcpAsn(e.target.value)}
+                  onBlur={handleHaGcpAsnBlur}
+                  className={haAsnError ? 'error-input' : undefined}
+                  title="ASN range 64512-65534; must differ from AWS ASN."
+                />
               </label>
-            <label>
-              Resource Name Prefix (optional)
-              <input value={haPrefix} onChange={(e) => setHaPrefix(e.target.value)} placeholder="ha-shared-vpn" />
-            </label>
+              {haAsnError && <div className="error">{haAsnError}</div>}
+              <label>
+                Resource Name Prefix (optional)
+                <input value={haPrefix} onChange={(e) => setHaPrefix(e.target.value)} placeholder="ha-shared-vpn" />
+              </label>
               <div className="info-callout">
                 This action provisions AWS and GCP HA VPN resources (VGWs, gateways, tunnels, and BGP sessions). Ensure the supplied credentials have the required permissions.
               </div>
@@ -1425,12 +1531,36 @@ const App = () => {
               <legend>Classic VPN Plan</legend>
               <label>
                 AWS ASN
-                <input type="number" min="1" value={classicAwsAsn} onChange={(e) => setClassicAwsAsn(e.target.value)} />
+                <input
+                  type="number"
+                  min="1"
+                  value={classicAwsAsn}
+                  onChange={(e) => setClassicAwsAsn(e.target.value)}
+                  onBlur={handleClassicAwsAsnBlur}
+                  disabled={Boolean(detectedAwsAsn)}
+                  title={detectedAwsAsn ? `Detected attached VGW ASN ${detectedAwsAsn}` : undefined}
+                  className={classicAsnError ? 'error-input' : undefined}
+                />
               </label>
+              {attachedVgw && (
+                <small className="info-callout">
+                  Using existing VGW {attachedVgw.name ? `${attachedVgw.name} (${attachedVgw.id})` : attachedVgw.id} with ASN {attachedVgw.asn || 'unknown'}. Only one VGW can be attached to a VPC at a time, so we will reuse this gateway.
+                </small>
+              )}
               <label>
                 GCP ASN
-                <input type="number" min="1" value={classicGcpAsn} onChange={(e) => setClassicGcpAsn(e.target.value)} />
+                <input
+                  type="number"
+                  min={minAsn}
+                  max={maxAsn}
+                  value={classicGcpAsn}
+                  onChange={(e) => setClassicGcpAsn(e.target.value)}
+                  onBlur={handleClassicGcpAsnBlur}
+                  className={classicAsnError ? 'error-input' : undefined}
+                  title="ASN range 64512-65534; must differ from AWS ASN."
+                />
               </label>
+              {classicAsnError && <div className="error">{classicAsnError}</div>}
               <label>
                 Resource Name Prefix (optional)
                 <input value={classicPrefix} onChange={(e) => setClassicPrefix(e.target.value)} placeholder="classic-shared-vpn" />

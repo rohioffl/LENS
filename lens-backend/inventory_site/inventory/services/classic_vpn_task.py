@@ -89,6 +89,11 @@ def run_classic_vpn_task(clean_data: dict) -> TaskExecutionResult:
     detected_asn = _discover_attached_vgw_asn(aws_region, aws_vpc_id)
     aws_asn = int(clean_data.get("aws_asn") or detected_asn or 64513)
     gcp_asn = int(clean_data.get("gcp_asn") or 64512)
+    # Ensure ASNs differ; auto-adjust GCP ASN if identical.
+    if aws_asn == gcp_asn:
+        adjusted = gcp_asn + 1 if gcp_asn < 65534 else 64512
+        print(f"Detected identical ASNs ({aws_asn}); adjusting GCP ASN to {adjusted} to avoid conflicts.")
+        gcp_asn = adjusted
     gcp_project = clean_data["gcp_project"]
     gcp_region = clean_data["gcp_region"]
     gcp_network_name = clean_data["gcp_network"]

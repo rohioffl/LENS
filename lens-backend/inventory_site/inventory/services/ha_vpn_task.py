@@ -73,6 +73,19 @@ def run_ha_vpn_task(clean_data: dict) -> TaskExecutionResult:
     config.gcp_asn = clean_data.get("gcp_asn") or 64512
 
     service_key = clean_data["gcp_service_key"]
+    gcp_network = ha_vpn.get_gcp_network(service_key, config.gcp_project, config.gcp_network)
+    selected_gcp_names = clean_data.get("gcp_subnets") or [s["name"] for s in gcp_network.get("subnetworks", [])]
+    if selected_gcp_names:
+        ranges = []
+        for subnet in gcp_network.get("subnetworks", []):
+            if subnet.get("name") not in set(selected_gcp_names):
+                continue
+            cidr = subnet.get("cidr") or subnet.get("ip_cidr_range") or subnet.get("ipCidrRange")
+            if cidr:
+                ranges.append(cidr)
+        if ranges:
+            config.tunnel_advertise_mode = "CUSTOM"
+            config.custom_advertised_ranges = ranges
 
     logger = ha_vpn.logger
     handler = logging.StreamHandler(sys.stdout)

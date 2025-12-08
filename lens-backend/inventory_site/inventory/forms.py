@@ -170,6 +170,17 @@ class ClassicVpnForm(AutomationTaskForm):
                 self.add_error(list_field, "Provide a JSON array.")
                 continue
             cleaned[list_field] = value
+        # Enforce ASN constraints
+        aws_asn = cleaned.get("aws_asn")
+        gcp_asn = cleaned.get("gcp_asn")
+        asn_min, asn_max = 64512, 65534
+        for field, value in (("aws_asn", aws_asn), ("gcp_asn", gcp_asn)):
+            if value is None:
+                continue
+            if value < asn_min or value > asn_max:
+                self.add_error(field, f"ASN must be between {asn_min} and {asn_max}.")
+        if aws_asn and gcp_asn and aws_asn == gcp_asn:
+            self.add_error("gcp_asn", "AWS ASN and GCP ASN must differ.")
         return cleaned
 
 
