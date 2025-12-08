@@ -6,25 +6,9 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        import importlib
+        from importlib import import_module
 
-        def _import_task(tail: str):
-            # Try both the app-relative name and an explicit package path.
-            candidates = [
-                f"{self.name}.services.{tail}",
-                f"inventory_site.inventory.services.{tail}",
-            ]
-            last_error = None
-            for candidate in candidates:
-                try:
-                    return importlib.import_module(candidate)
-                except ModuleNotFoundError as exc:
-                    last_error = exc
-                    continue
-            # If all candidates fail, re-raise the last error for visibility.
-            if last_error:
-                raise last_error
-
+        # Always use the canonical package path for this app to avoid environment-specific prefixes.
         for tail in (
             "aws_task",
             "terraform_task",
@@ -32,4 +16,4 @@ class InventoryConfig(AppConfig):
             "ecr_migration_task",
             "ha_vpn_task",
         ):
-            _import_task(tail)
+            import_module(f"inventory.services.{tail}")
