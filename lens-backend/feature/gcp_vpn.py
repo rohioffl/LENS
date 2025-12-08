@@ -114,13 +114,15 @@ def list_gcp_networks(service_key: str, project_id: Optional[str] = None) -> tup
     networks: List[Dict[str, Any]] = []
     try:
         for network in client.list(project=project):
+            raw_subnets = getattr(network, "subnetworks", []) or []
+            subnetworks = [str(item) for item in raw_subnets]
             networks.append(
                 {
                     "name": network.name,
-                    "auto_create_subnetworks": getattr(network, "auto_create_subnetworks", False),
+                    "auto_create_subnetworks": bool(getattr(network, "auto_create_subnetworks", False)),
                     "routing_mode": getattr(getattr(network, "routing_config", None), "routing_mode", "REGIONAL"),
-                    "subnet_count": len(getattr(network, "subnetworks", []) or []),
-                    "subnetworks": getattr(network, "subnetworks", []) or [],
+                    "subnet_count": len(subnetworks),
+                    "subnetworks": subnetworks,
                 }
             )
     except gcp_exceptions.GoogleAPICallError as exc:  # pragma: no cover - API guard
