@@ -564,32 +564,49 @@ def create_vpn_tunnel_with_bgp(compute, config: HAVPNConfig,
 
 def ensure_vgw_attached(ec2, vpc_id: str, vgw_name: str, asn: int) -> str:
     """Create/attach Virtual Private Gateway with custom ASN"""
-    
-    # Check existing
-    resp = ec2.describe_vpn_gateways(
-        Filters=[{'Name': 'tag:Name', 'Values': [vgw_name]}]
-    )
-    
-    active = [gw for gw in resp['VpnGateways'] if gw.get('State') != 'deleted']
-    
-    if active:
-        vgw = active[0]
-        vgw_id = vgw['VpnGatewayId']
-        logger.info(f"Found existing VGW: {vgw_id}")
-        created = False
-    else:
-        logger.info(f"Creating VGW with ASN {asn}")
-        resp = ec2.create_vpn_gateway(
-            Type='ipsec.1',
-            AmazonSideAsn=asn
+    # Prefer any VGW already attached to this VPC (regardless of name)
+    attached_resp = ec2.describe_vpn_gateways(
+        Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}]
+    )['VpnGateways']
+    vgw = None
+    vgw_id = None
+    for gw in attached_resp:
+        if gw.get('State') == 'deleted':
+            continue
+        for att in gw.get('VpcAttachments', []):
+            if att.get('VpcId') == vpc_id and att.get('State') in {'attached', 'attaching'}:
+                vgw = gw
+                vgw_id = gw['VpnGatewayId']
+                logger.info(f"Reusing VGW {vgw_id} already associated with {vpc_id}")
+                break
+        if vgw:
+            break
+
+    created = False
+    if vgw is None:
+        # Fallback to name lookup
+        resp = ec2.describe_vpn_gateways(
+            Filters=[{'Name': 'tag:Name', 'Values': [vgw_name]}]
         )
-        vgw_id = resp['VpnGateway']['VpnGatewayId']
-        ec2.create_tags(
-            Resources=[vgw_id],
-            Tags=[{'Key': 'Name', 'Value': vgw_name}]
-        )
-        vgw = resp['VpnGateway']
-        created = True
+        active = [gw for gw in resp['VpnGateways'] if gw.get('State') != 'deleted']
+
+        if active:
+            vgw = active[0]
+            vgw_id = vgw['VpnGatewayId']
+            logger.info(f"Found existing VGW: {vgw_id}")
+        else:
+            logger.info(f"Creating VGW with ASN {asn}")
+            resp = ec2.create_vpn_gateway(
+                Type='ipsec.1',
+                AmazonSideAsn=asn
+            )
+            vgw_id = resp['VpnGateway']['VpnGatewayId']
+            ec2.create_tags(
+                Resources=[vgw_id],
+                Tags=[{'Key': 'Name', 'Value': vgw_name}]
+            )
+            vgw = resp['VpnGateway']
+            created = True
     
     # Check attachment
     attachments = vgw.get('VpcAttachments', [])

@@ -85,7 +85,7 @@ def _ensure_resource_manager_client() -> None:
         )
 
 
-def _resolve_subnetwork_details(credentials, project: str, subnetwork_url: str) -> Dict[str, Any]:
+def _resolve_subnetwork_details(credentials, project: str, subnetwork_url: str, region_filter: Optional[str] = None) -> Optional[Dict[str, Any]]:
     parts = subnetwork_url.split("/")
     try:
         region_idx = parts.index("regions")
@@ -94,6 +94,9 @@ def _resolve_subnetwork_details(credentials, project: str, subnetwork_url: str) 
     except (ValueError, IndexError):
         region = "unknown"
         name = parts[-1]
+    if region_filter and region_filter != region:
+        # Skip subnets outside the requested region entirely.
+        return None
     subnet_client = compute_v1.SubnetworksClient(credentials=credentials)
     cidr = None
     try:
@@ -178,7 +181,7 @@ def list_gcp_projects(service_key: str) -> tuple[str, List[Dict[str, Any]]]:
     return inferred_project, projects
 
 
-def get_gcp_network(service_key: str, project_id: str, network_name: str) -> Dict[str, Any]:
+def get_gcp_network(service_key: str, project_id: str, network_name: str, region_filter: Optional[str] = None) -> Dict[str, Any]:
     if not network_name:
         raise GcpVpnError("A GCP VPC network must be selected.")
     credentials, inferred_project = _build_gcp_credentials(service_key)
@@ -190,7 +193,9 @@ def get_gcp_network(service_key: str, project_id: str, network_name: str) -> Dic
         raise GcpVpnError(f"GCP network '{network_name}' not found in project '{project}'.") from exc
     subnetworks: List[Dict[str, Any]] = []
     for url in getattr(network, "subnetworks", []) or []:
-        subnetworks.append(_resolve_subnetwork_details(credentials, project, url))
+        details = _resolve_subnetwork_details(credentials, project, url, region_filter=region_filter)
+        if details:
+            subnetworks.append(details)
     return {
         "name": network.name,
         "project": project,

@@ -294,6 +294,7 @@ def aws_subnets_api(request):
     except Exception as exc:
         return JsonResponse({"error": f"Failed to load VPC: {exc}"}, status=500)
 
+    attached_vgw = terraform_vpc.discover_attached_vgw(region, vpc_id)
     items = []
     for subnet in vpc.subnets:
         items.append(
@@ -307,7 +308,7 @@ def aws_subnets_api(request):
             }
         )
 
-    return JsonResponse({"subnets": items})
+    return JsonResponse({"subnets": items, "attached_vgw": attached_vgw})
 
 
 @csrf_exempt
@@ -381,11 +382,12 @@ def gcp_network_detail_api(request):
     service_key = payload.get("service_key")
     project = payload.get("gcp_project")
     network = payload.get("gcp_network")
+    region_filter = payload.get("gcp_region")
     if not service_key or not project or not network:
         return JsonResponse({"error": "Fields 'service_key', 'gcp_project', and 'gcp_network' are required."}, status=400)
 
     try:
-        network_data = gcp_vpn.get_gcp_network(service_key, project, network)
+        network_data = gcp_vpn.get_gcp_network(service_key, project, network, region_filter=region_filter)
     except gcp_vpn.GcpVpnError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     except SystemExit as exc:  # pragma: no cover - dependency hint

@@ -127,6 +127,26 @@ def configure_gcp_credentials(path: Optional[str]) -> None:
     os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", path)
 
 
+def discover_attached_vgw(region: str, vpc_id: str) -> Optional[Dict[str, Any]]:
+    """Return details for the VGW already attached to a VPC (if any)."""
+    ensure_boto3()
+    ensure_botocore()
+    ec2 = boto3.client("ec2", region_name=region)
+    resp = ec2.describe_vpn_gateways(Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}])
+    for gw in resp.get("VpnGateways", []):
+        for att in gw.get("VpcAttachments", []):
+            if att.get("VpcId") == vpc_id and att.get("State") == "attached":
+                return {
+                    "id": gw.get("VpnGatewayId"),
+                    "state": gw.get("State"),
+                    "attachment_state": att.get("State"),
+                    "asn": gw.get("AmazonSideAsn"),
+                    "type": gw.get("Type"),
+                    "name": next((t.get("Value") for t in gw.get("Tags", []) if t.get("Key") == "Name"), ""),
+                }
+    return None
+
+
 def resolve_workspace_path(path: str) -> str:
     """Force generated artifacts into the ./terraform/vpc workspace tree."""
     workspace_root = os.path.abspath(os.path.join(os.getcwd(), "terraform", "vpc"))

@@ -164,7 +164,7 @@ npm run dev
 
 The dev server proxies `/api/*` requests to http://127.0.0.1:8000, so keep the Django server running while testing.
 
-The React sample now exposes four cards (“VPC Terraform Toolkit”, “AWS Inventory Export”, “HA VPN Builder”, and “ECR to Artifact Registry”). All views share the AWS credential block; the Terraform view auto-loads VPCs/subnets, the Inventory view offers checkbox-based multi-region/resource selection with date pickers and progress bars, the HA VPN builder adds service-account file upload plus GCP region/network pickers before producing artifacts, and the ECR workflow orchestrates repository migrations.
+The React sample now exposes five cards (“VPC Terraform Toolkit”, “AWS Inventory Export”, “HA VPN Builder”, “Classic VPN Builder”, and “ECR to Artifact Registry”). All views share the AWS credential block; the Terraform view auto-loads VPCs/subnets, the Inventory view offers checkbox-based multi-region/resource selection with date pickers and progress bars, the HA/Classic VPN builders add service-account file upload plus GCP region/network pickers before producing artifacts, and the ECR workflow orchestrates repository migrations.
 
 ## CLI usage (unchanged)
 

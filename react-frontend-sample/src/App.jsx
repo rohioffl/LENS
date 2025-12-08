@@ -326,6 +326,13 @@ const App = () => {
   const [vpnNetworkError, setVpnNetworkError] = useState('');
   const [vpnGcpSubnets, setVpnGcpSubnets] = useState([]);
   const [vpnSubnetError, setVpnSubnetError] = useState('');
+  const [classicAwsAsn, setClassicAwsAsn] = useState('64513');
+  const [classicGcpAsn, setClassicGcpAsn] = useState('64512');
+  const [classicPrefix, setClassicPrefix] = useState('');
+  const [classicIkeVersion, setClassicIkeVersion] = useState('1');
+  const [classicLogs, setClassicLogs] = useState('');
+  const [classicError, setClassicError] = useState('');
+  const [classicArtifacts, setClassicArtifacts] = useState([]);
   const [selectedAwsSubnets, setSelectedAwsSubnets] = useState([]);
   const [selectedGcpSubnets, setSelectedGcpSubnets] = useState([]);
   const [vpnServiceFileName, setVpnServiceFileName] = useState('');
@@ -342,6 +349,7 @@ const App = () => {
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
   useArtifactCleanup(haArtifacts);
+  useArtifactCleanup(classicArtifacts);
   useArtifactCleanup(ecrArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
@@ -361,9 +369,9 @@ const App = () => {
     const filtered = filterSubnetsByRegion(vpnGcpSubnets, vpnGcpRegion);
     return filtered.length ? filtered : vpnGcpSubnets;
   }, [vpnGcpSubnets, vpnGcpRegion]);
-  const vpnViews = ['ha_vpn'];
+  const vpnViews = ['ha_vpn', 'classic_vpn'];
   const isVpnView = vpnViews.includes(view);
-  const vpnLegendLabel = 'HA VPN';
+  const vpnLegendLabel = view === 'classic_vpn' ? 'Classic VPN' : 'HA VPN';
 
   useEffect(() => {
     if (!resolvedRegion) return;
@@ -426,6 +434,11 @@ const App = () => {
         setSubnets(items);
         setSelectedAwsSubnets(items.map((item) => item.id));
         setSubnetError('');
+        if (res.attached_vgw?.asn) {
+          const asn = String(res.attached_vgw.asn);
+          setHaAwsAsn(asn);
+          setClassicAwsAsn(asn);
+        }
       } catch (err) {
         if (!controller.signal.aborted) {
           setSubnetError(err.message || String(err));
@@ -620,7 +633,7 @@ const App = () => {
       setVpnSubnetsLoading(false);
       return;
     }
-    const cacheKey = `${trimmedProject}::${vpnGcpNetwork}`;
+    const cacheKey = `${trimmedProject}::${vpnGcpNetwork}::${vpnGcpRegion}`;
     const cached = gcpSubnetCacheRef.current.get(cacheKey);
     if (cached) {
       setVpnGcpSubnets(cached);
@@ -637,6 +650,7 @@ const App = () => {
           service_key: vpnServiceKey,
           gcp_project: trimmedProject,
           gcp_network: vpnGcpNetwork,
+          gcp_region: vpnGcpRegion,
         });
         const subnets = res.network?.subnetworks || [];
         gcpSubnetCacheRef.current.set(cacheKey, subnets);
@@ -663,6 +677,8 @@ const App = () => {
     }, debounceDelay);
     return () => {
       clearTimeout(timer);
+      // If we switch region/network before the fetch fires, clear any stale loading overlay.
+      setVpnSubnetsLoading(false);
     };
   }, [view, vpnServiceKey, vpnGcpProject, vpnGcpNetwork, vpnGcpRegion, isVpnView]);
   useEffect(() => {
@@ -827,6 +843,9 @@ const App = () => {
     setHaLogs('');
     setHaArtifacts([]);
     setHaError('');
+    setClassicLogs('');
+    setClassicArtifacts([]);
+    setClassicError('');
   };
 
   const runHaVpnTask = async () => {
@@ -869,6 +888,51 @@ const App = () => {
       setHaArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setHaError(err.message || String(err));
+    }
+  };
+
+  const runClassicVpnTask = async () => {
+    setClassicError('');
+    setClassicLogs('Submitting Classic VPN setup request...\n');
+    setClassicArtifacts([]);
+    if (!authReady || !selectedVpc || !vpnServiceKey.trim() || !vpnGcpProject.trim() || !vpnGcpNetwork) {
+      setClassicError('AWS creds, selected VPC, service key, project, and GCP network are required.');
+      return;
+    }
+    if (!selectedAwsSubnets.length || !selectedGcpSubnets.length) {
+      setClassicError('Select at least one subnet in both AWS and GCP.');
+      return;
+    }
+    const awsAsnValue = Number(classicAwsAsn) || 64513;
+    const gcpAsnValue = Number(classicGcpAsn) || 64512;
+    const ikeValue = Math.min(2, Math.max(1, Number(classicIkeVersion) || 1));
+    try {
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        {
+          task_id: 'classic_vpn',
+          data: {
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+            aws_region: resolvedRegion,
+            aws_vpc_id: selectedVpc,
+            gcp_service_key: vpnServiceKey,
+            gcp_project: vpnGcpProject.trim(),
+            gcp_region: vpnGcpRegion,
+            gcp_network: vpnGcpNetwork,
+            aws_asn: awsAsnValue,
+            gcp_asn: gcpAsnValue,
+            name_prefix: classicPrefix.trim(),
+            ike_version: ikeValue,
+            aws_subnets: selectedAwsSubnets,
+            gcp_subnets: selectedGcpSubnets,
+          },
+        },
+        (message) => setClassicLogs((prev) => mergeBackendLogs(prev, message)),
+      );
+      setClassicArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setClassicError(err.message || String(err));
     }
   };
 
@@ -1003,6 +1067,20 @@ const App = () => {
     setSelectedAwsSubnets([]);
   };
 
+  const toggleGcpSubnetSelection = (name) => {
+    setSelectedGcpSubnets((prev) =>
+      prev.includes(name) ? prev.filter((id) => id !== name) : [...prev, name]
+    );
+  };
+
+  const selectAllGcpSubnets = () => {
+    setSelectedGcpSubnets(gcpSubnetOptions.map((subnet) => subnet.name));
+  };
+
+  const clearGcpSubnets = () => {
+    setSelectedGcpSubnets([]);
+  };
+
   const currentInvLogText = invLogs || (invLoading ? 'Inventory is running, waiting for server logs...' : 'Logs will appear here once a run starts.');
 
   return (
@@ -1011,26 +1089,31 @@ const App = () => {
       <p>Select an automation task to get started.</p>
 
       {view === 'home' && (
-        <div className="card-grid">
-          <div className="task-card">
-            <h2>VPC Terraform Toolkit</h2>
-            <p>Convert AWS VPCs into GCP VPCs ready Terraform bundles with per-subnet overrides.</p>
-            <button onClick={() => setView('terraform')}>Open Toolkit</button>
+      <div className="card-grid">
+        <div className="task-card">
+          <h2>VPC Terraform Toolkit</h2>
+          <p>Convert AWS VPCs into GCP VPCs ready Terraform bundles with per-subnet overrides.</p>
+          <button onClick={() => setView('terraform')}>Open Toolkit</button>
           </div>
           <div className="task-card">
             <h2>AWS Inventory Export</h2>
             <p>Create XLSX-based resource inventories directly from your browser.</p>
             <button onClick={() => setView('inventory')}>Run Inventory</button>
           </div>
-          <div className="task-card">
-            <h2>HA VPN Builder</h2>
-            <p>Design a redundant AWS &lt;-&gt; GCP HA VPN with dual tunnels and BGP routing.</p>
-            <button onClick={() => setView('ha_vpn')}>Plan HA VPN</button>
-          </div>
-          <div className="task-card">
-            <h2>ECR to Artifact Registry</h2>
-            <p>Migrate all ECR repos to GCP Artifact Registry with parallel pushes and skip existing tags.</p>
-            <button onClick={() => setView('ecr_migration')}>Migrate Repos</button>
+        <div className="task-card">
+          <h2>HA VPN Builder</h2>
+          <p>Design a redundant AWS &lt;-&gt; GCP HA VPN with dual tunnels and BGP routing.</p>
+          <button onClick={() => setView('ha_vpn')}>Plan HA VPN</button>
+        </div>
+        <div className="task-card">
+          <h2>Classic VPN Builder</h2>
+          <p>Provision single-tunnel AWS &lt;-&gt; GCP Classic VPN with BGP and IKE version selection.</p>
+          <button onClick={() => setView('classic_vpn')}>Plan Classic VPN</button>
+        </div>
+        <div className="task-card">
+          <h2>ECR to Artifact Registry</h2>
+          <p>Migrate all ECR repos to GCP Artifact Registry with parallel pushes and skip existing tags.</p>
+          <button onClick={() => setView('ecr_migration')}>Migrate Repos</button>
           </div>
         </div>
       )}
@@ -1041,7 +1124,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'ha_vpn', 'ecr_migration'].includes(view)) && (
+      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -1052,7 +1135,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'ha_vpn', 'ecr_migration'].includes(view) && (
+        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -1072,7 +1155,7 @@ const App = () => {
             )}
           </>
         )}
-        {['terraform', 'ha_vpn'].includes(view) && (
+        {['terraform', 'ha_vpn', 'classic_vpn'].includes(view) && (
           <>
             <small>VPCs load automatically when all fields above are populated.</small>
             <label>
@@ -1088,7 +1171,7 @@ const App = () => {
             </label>
             {view === 'terraform' && <small>Subnets load automatically once a VPC is chosen.</small>}
             {vpcError && <div className="error">{vpcError}</div>}
-            {view === 'terraform' && subnetError && <div className="error">{subnetError}</div>}
+            {['terraform', 'classic_vpn', 'ha_vpn'].includes(view) && subnetError && <div className="error">{subnetError}</div>}
           </>
         )}
         {isVpnView && subnetRows.length > 0 && (
@@ -1272,39 +1355,112 @@ const App = () => {
           {view === 'ha_vpn' && gcpSubnetOptions.length > 0 && (
             <small>All discovered GCP subnets will be included automatically for HA VPN planning.</small>
           )}
+          {view === 'classic_vpn' && gcpSubnetOptions.length > 0 && (
+            <div className="aws-subnet-selector">
+              <div className="label-row">
+                <label>GCP Subnets</label>
+                <div className="pill-actions">
+                  <button type="button" onClick={selectAllGcpSubnets} disabled={!gcpSubnetOptions.length}>
+                    Select all
+                  </button>
+                  <button type="button" onClick={clearGcpSubnets} disabled={!selectedGcpSubnets.length}>
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <small>Choose which GCP subnetworks to include for tunnel propagation.</small>
+              <div className="checkbox-grid">
+                {gcpSubnetOptions.map((subnet) => (
+                  <label key={subnet.name} className="checkbox-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedGcpSubnets.includes(subnet.name)}
+                      onChange={() => toggleGcpSubnetSelection(subnet.name)}
+                    />
+                    <span>
+                      {subnet.name} ({subnet.ipCidrRange || subnet.cidr || subnet.ip_cidr_range || '?'}) @ {subnet.region}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </fieldset>
-          <fieldset>
-            <legend>HA VPN Plan</legend>
+          {view === 'ha_vpn' && (
+            <fieldset>
+              <legend>HA VPN Plan</legend>
+              <label>
+                AWS ASN
+                <input type="number" min="1" value={haAwsAsn} onChange={(e) => setHaAwsAsn(e.target.value)} />
+              </label>
+              <label>
+                GCP ASN
+                <input type="number" min="1" value={haGcpAsn} onChange={(e) => setHaGcpAsn(e.target.value)} />
+              </label>
             <label>
-              AWS ASN
-              <input type="number" min="1" value={haAwsAsn} onChange={(e) => setHaAwsAsn(e.target.value)} />
+              Resource Name Prefix (optional)
+              <input value={haPrefix} onChange={(e) => setHaPrefix(e.target.value)} placeholder="ha-shared-vpn" />
             </label>
-            <label>
-              GCP ASN
-              <input type="number" min="1" value={haGcpAsn} onChange={(e) => setHaGcpAsn(e.target.value)} />
-            </label>
-          <label>
-            Resource Name Prefix (optional)
-            <input value={haPrefix} onChange={(e) => setHaPrefix(e.target.value)} placeholder="ha-shared-vpn" />
-          </label>
-            <div className="info-callout">
-              This action provisions AWS and GCP HA VPN resources (VGWs, gateways, tunnels, and BGP sessions). Ensure the supplied credentials have the required permissions.
-            </div>
-            <button onClick={runHaVpnTask} disabled={!selectedVpc || !authReady}>
-              Provision HA VPN
-            </button>
-            {haError && <div className="error">{haError}</div>}
-            <h3>Logs</h3>
-            <pre>{haLogs}</pre>
-            <h3>Artifacts</h3>
-            <div className="artifacts">
-              {haArtifacts.map((artifact) => (
-                <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
-                  Download {artifact.filename}
-                </a>
-              ))}
-            </div>
-          </fieldset>
+              <div className="info-callout">
+                This action provisions AWS and GCP HA VPN resources (VGWs, gateways, tunnels, and BGP sessions). Ensure the supplied credentials have the required permissions.
+              </div>
+              <button onClick={runHaVpnTask} disabled={!selectedVpc || !authReady}>
+                Provision HA VPN
+              </button>
+              {haError && <div className="error">{haError}</div>}
+              <h3>Logs</h3>
+              <pre>{haLogs}</pre>
+              <h3>Artifacts</h3>
+              <div className="artifacts">
+                {haArtifacts.map((artifact) => (
+                  <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+                    Download {artifact.filename}
+                  </a>
+                ))}
+              </div>
+            </fieldset>
+          )}
+          {view === 'classic_vpn' && (
+            <fieldset>
+              <legend>Classic VPN Plan</legend>
+              <label>
+                AWS ASN
+                <input type="number" min="1" value={classicAwsAsn} onChange={(e) => setClassicAwsAsn(e.target.value)} />
+              </label>
+              <label>
+                GCP ASN
+                <input type="number" min="1" value={classicGcpAsn} onChange={(e) => setClassicGcpAsn(e.target.value)} />
+              </label>
+              <label>
+                Resource Name Prefix (optional)
+                <input value={classicPrefix} onChange={(e) => setClassicPrefix(e.target.value)} placeholder="classic-shared-vpn" />
+              </label>
+              <label>
+                IKE Version
+                <select value={classicIkeVersion} onChange={(e) => setClassicIkeVersion(e.target.value)}>
+                  <option value="1">IKEv1</option>
+                  <option value="2">IKEv2</option>
+                </select>
+              </label>
+              <div className="info-callout">
+                This action provisions AWS and GCP Classic VPN resources (VGW, tunnels, and BGP). Ensure the supplied credentials have the required permissions.
+              </div>
+              <button onClick={runClassicVpnTask} disabled={!selectedVpc || !authReady || vpnSubnetsLoading}>
+                Provision Classic VPN
+              </button>
+              {classicError && <div className="error">{classicError}</div>}
+              <h3>Logs</h3>
+              <pre>{classicLogs}</pre>
+              <h3>Artifacts</h3>
+              <div className="artifacts">
+                {classicArtifacts.map((artifact) => (
+                  <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+                    Download {artifact.filename}
+                  </a>
+                ))}
+              </div>
+            </fieldset>
+          )}
       </>
       )}
 

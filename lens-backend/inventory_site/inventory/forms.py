@@ -106,6 +106,73 @@ class TerraformVpcForm(AutomationTaskForm):
         return cleaned
 
 
+class ClassicVpnForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region")
+    aws_vpc_id = forms.CharField(label="AWS VPC ID")
+    aws_asn = forms.IntegerField(label="AWS ASN", initial=64513, min_value=1)
+
+    gcp_service_key = forms.CharField(widget=forms.Textarea, label="GCP Service Account JSON/Base64")
+    gcp_project = forms.CharField(required=False, label="GCP Project ID")
+    gcp_region = forms.CharField(label="GCP Region")
+    gcp_network = forms.CharField(label="GCP VPC Network Name")
+    gcp_asn = forms.IntegerField(label="GCP ASN", initial=64512, min_value=1)
+    name_prefix = forms.CharField(required=False, label="Resource Name Prefix (optional)")
+    ike_version = forms.IntegerField(label="IKE Version", initial=1, min_value=1, max_value=2)
+    aws_subnets = forms.JSONField(required=False, label="Selected AWS Subnets")
+    gcp_subnets = forms.JSONField(required=False, label="Selected GCP Subnets")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "classic_vpn"
+        self._service_key_info: dict | None = None
+
+    def clean_gcp_service_key(self):
+        value = (self.cleaned_data.get("gcp_service_key") or "").strip()
+        if not value:
+            raise forms.ValidationError("Provide the service-account JSON.")
+        info = None
+        try:
+            info = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                decoded = base64.b64decode(value).decode("utf-8")
+                info = json.loads(decoded)
+            except Exception as exc:
+                raise forms.ValidationError("Service key must be valid JSON or base64 encoded JSON.") from exc
+        if not isinstance(info, dict):
+            raise forms.ValidationError("Service key JSON must be an object.")
+        self._service_key_info = info
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        required_fields = ["access_key", "secret_key", "aws_region", "aws_vpc_id", "gcp_region", "gcp_network"]
+        for field in required_fields:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+        if not cleaned.get("gcp_project"):
+            project = (self._service_key_info or {}).get("project_id")
+            if project:
+                cleaned["gcp_project"] = project
+            else:
+                self.add_error("gcp_project", "GCP project ID is required.")
+        for list_field in ("aws_subnets", "gcp_subnets"):
+            value = cleaned.get(list_field) or []
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    self.add_error(list_field, "Expected a JSON array.")
+                    continue
+            if value and not isinstance(value, list):
+                self.add_error(list_field, "Provide a JSON array.")
+                continue
+            cleaned[list_field] = value
+        return cleaned
+
+
 class EcrMigrationForm(AutomationTaskForm):
     access_key = forms.CharField(label="AWS Access Key ID")
     secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
