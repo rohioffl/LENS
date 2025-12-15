@@ -507,3 +507,32 @@ def aws_ecs_services_api(request):
 
     deduped = sorted(set(names))
     return JsonResponse({"services": deduped})
+
+
+@csrf_exempt
+def aws_eks_clusters_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    if not region:
+        return JsonResponse({"error": "Missing required field 'region'."}, status=400)
+
+    creds = _aws_creds_from_payload(payload)
+    try:
+        eks = _boto3_client("eks", region, creds)
+        paginator = eks.get_paginator("list_clusters")
+        clusters: list[str] = []
+        for page in paginator.paginate():
+            for name in page.get("clusters", []):
+                if isinstance(name, str) and name.strip():
+                    clusters.append(name.strip())
+    except Exception as exc:  # pragma: no cover - runtime guard
+        return JsonResponse({"error": f"Failed to list EKS clusters: {exc}"}, status=500)
+
+    return JsonResponse({"clusters": sorted(set(clusters))})

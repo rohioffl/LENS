@@ -377,18 +377,36 @@ const App = () => {
   const [ecsTfNodePoolZones, setEcsTfNodePoolZones] = useState('');
   const [ecsTfPrivateNodes, setEcsTfPrivateNodes] = useState(true);
   const [ecsTfPrivateEndpoint, setEcsTfPrivateEndpoint] = useState(false);
-  const [ecsTfSkipValidate, setEcsTfSkipValidate] = useState(true);
   const [ecsTfLogs, setEcsTfLogs] = useState('');
   const [ecsTfError, setEcsTfError] = useState('');
   const [ecsTfArtifacts, setEcsTfArtifacts] = useState([]);
-  const [ecsManifestNamespace, setEcsManifestNamespace] = useState('');
-  const [ecsManifestAwsMode, setEcsManifestAwsMode] = useState('auto');
-  const [ecsManifestModel, setEcsManifestModel] = useState('gemini-1.5-flash');
-  const [ecsManifestFallbacks, setEcsManifestFallbacks] = useState('');
-  const [ecsManifestApiKey, setEcsManifestApiKey] = useState('');
   const [ecsManifestLogs, setEcsManifestLogs] = useState('');
   const [ecsManifestError, setEcsManifestError] = useState('');
   const [ecsManifestArtifacts, setEcsManifestArtifacts] = useState([]);
+
+  const [eksClusters, setEksClusters] = useState([]);
+  const [eksClusterLoading, setEksClusterLoading] = useState(false);
+  const [eksClusterError, setEksClusterError] = useState('');
+  const [eksClusterName, setEksClusterName] = useState('');
+  const [eksTfGcpProject, setEksTfGcpProject] = useState('');
+  const [eksTfGcpLocation, setEksTfGcpLocation] = useState('us-central1');
+  const [eksTfGkeName, setEksTfGkeName] = useState('');
+  const [eksTfMachineType, setEksTfMachineType] = useState('e2-standard-4');
+  const [eksTfNodeCpu, setEksTfNodeCpu] = useState('');
+  const [eksTfNodeMem, setEksTfNodeMem] = useState('');
+  const [eksTfMinNodes, setEksTfMinNodes] = useState('3');
+  const [eksTfMaxNodes, setEksTfMaxNodes] = useState('6');
+  const [eksTfNodeLocations, setEksTfNodeLocations] = useState('');
+  const [eksTfNetwork, setEksTfNetwork] = useState('');
+  const [eksTfSubnetwork, setEksTfSubnetwork] = useState('');
+  const [eksTfServiceAccount, setEksTfServiceAccount] = useState('');
+  const [eksTfReleaseChannel, setEksTfReleaseChannel] = useState('REGULAR');
+  const [eksTfMasterCidr, setEksTfMasterCidr] = useState('');
+  const [eksTfPrivateNodes, setEksTfPrivateNodes] = useState(true);
+  const [eksTfPrivateEndpoint, setEksTfPrivateEndpoint] = useState(false);
+  const [eksTfLogs, setEksTfLogs] = useState('');
+  const [eksTfError, setEksTfError] = useState('');
+  const [eksTfArtifacts, setEksTfArtifacts] = useState([]);
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
@@ -397,9 +415,12 @@ const App = () => {
   useArtifactCleanup(ecrArtifacts);
   useArtifactCleanup(ecsTfArtifacts);
   useArtifactCleanup(ecsManifestArtifacts);
+  useArtifactCleanup(eksTfArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
+  const ecsClusterSelectValue = ecsClusters.includes(ecsClusterName) ? ecsClusterName : '';
+  const eksClusterSelectValue = eksClusters.includes(eksClusterName) ? eksClusterName : '';
 
   const sanitizeNetworkName = (value) =>
     (value || '')
@@ -428,6 +449,7 @@ const App = () => {
     if (mapped) {
       setEcrGcpRegion(mapped);
       setEcsTfGcpLocation(mapped);
+      setEksTfGcpLocation(mapped);
     }
   }, [resolvedRegion]);
 
@@ -631,6 +653,39 @@ const App = () => {
         setEcsClusters([]);
       } finally {
         setEcsClusterLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [authReady, awsAccess, awsSecret, resolvedRegion, view]);
+
+  useEffect(() => {
+    if (!authReady || view !== 'eks_terraform') {
+      setEksClusterLoading(false);
+      if (view !== 'eks_terraform') {
+        setEksClusters([]);
+        setEksClusterError('');
+      }
+      return;
+    }
+    setEksClusterLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/aws/eks/clusters/', {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          region: resolvedRegion,
+        });
+        const items = res.clusters || [];
+        setEksClusters(items);
+        if (!eksClusterName && items.length) {
+          setEksClusterName(items[0]);
+        }
+        setEksClusterError('');
+      } catch (err) {
+        setEksClusterError(err.message || String(err));
+        setEksClusters([]);
+      } finally {
+        setEksClusterLoading(false);
       }
     }, debounceDelay);
     return () => clearTimeout(timer);
@@ -950,7 +1005,6 @@ const App = () => {
         node_pool_subnet: ecsTfNodePoolSubnet.trim(),
         node_pool_zones: ecsTfNodePoolZones,
         services: ecsTerraformServices,
-        skip_terraform_validate: ecsTfSkipValidate,
       };
       const event = await runStreamingTask(
         '/api/tasks/run-stream/',
@@ -960,6 +1014,48 @@ const App = () => {
       setEcsTfArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setEcsTfError(err.message || String(err));
+    }
+  };
+
+  const runEksTerraformTask = async () => {
+    setEksTfError('');
+    setEksTfLogs('Planning EKS -> GKE Terraform bundle...\n');
+    setEksTfArtifacts([]);
+    if (!authReady || !eksClusterName || !eksTfGcpProject.trim() || !eksTfGcpLocation.trim()) {
+      setEksTfError('AWS creds, EKS cluster, and GCP fields are required.');
+      return;
+    }
+    try {
+      const payload = {
+        access_key: awsAccess.trim(),
+        secret_key: awsSecret.trim(),
+        aws_region: resolvedRegion,
+        cluster_name: eksClusterName,
+        gcp_project: eksTfGcpProject.trim(),
+        gcp_location: eksTfGcpLocation.trim(),
+        gke_cluster_name: eksTfGkeName.trim(),
+        machine_type: eksTfMachineType.trim(),
+        node_cpu: eksTfNodeCpu,
+        node_memory: eksTfNodeMem,
+        min_nodes: eksTfMinNodes,
+        max_nodes: eksTfMaxNodes,
+        node_locations: eksTfNodeLocations,
+        network: eksTfNetwork.trim(),
+        subnetwork: eksTfSubnetwork.trim(),
+        service_account: eksTfServiceAccount.trim(),
+        release_channel: eksTfReleaseChannel.trim(),
+        private_nodes: eksTfPrivateNodes,
+        private_endpoint: eksTfPrivateEndpoint,
+        master_ipv4_cidr: eksTfMasterCidr.trim(),
+      };
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'eks_terraform', data: payload },
+        (message) => setEksTfLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setEksTfArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setEksTfError(err.message || String(err));
     }
   };
 
@@ -977,12 +1073,7 @@ const App = () => {
         secret_key: awsSecret.trim(),
         aws_region: resolvedRegion,
         cluster_name: ecsClusterName,
-        namespace: ecsManifestNamespace.trim(),
         services: ecsManifestServices,
-        aws_credentials_mode: ecsManifestAwsMode,
-        gemini_model: ecsManifestModel.trim(),
-        gemini_fallbacks: ecsManifestFallbacks.trim(),
-        gemini_api_key: ecsManifestApiKey.trim(),
       };
       const event = await runStreamingTask(
         '/api/tasks/run-stream/',
@@ -1410,6 +1501,11 @@ const App = () => {
           <button onClick={() => setView('ecs_terraform')}>Plan Cluster</button>
         </div>
         <div className="task-card">
+          <h2>{'EKS -> GKE Terraform'}</h2>
+          <p>Size a GKE cluster directly from existing EKS nodegroups and download Terraform bundles.</p>
+          <button onClick={() => setView('eks_terraform')}>Plan EKS Cluster</button>
+        </div>
+        <div className="task-card">
           <h2>ECS → GKE Manifests</h2>
           <p>Convert ECS task definitions into curated Kubernetes manifests using Gemini.</p>
           <button onClick={() => setView('ecs_manifests')}>Generate Manifests</button>
@@ -1423,7 +1519,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'ecs_manifests'].includes(view)) && (
+      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -1434,7 +1530,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'ecs_manifests'].includes(view) && (
+        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -1601,22 +1697,30 @@ const App = () => {
         <legend>ECS Cluster & Target</legend>
         <label>
           ECS Cluster
+          <select
+            value={ecsClusterSelectValue}
+            onChange={(e) => setEcsClusterName(e.target.value)}
+            disabled={!ecsClusters.length}
+          >
+            <option value="">-- Select cluster --</option>
+            {ecsClusters.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {ecsClusterLoading && <small>Loading ECS clusters...</small>}
+        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
+        <label>
+          Cluster Name (manual override)
           <input
-            list="ecsClusterOptions"
             value={ecsClusterName}
             onChange={(e) => setEcsClusterName(e.target.value)}
             placeholder="my-ecs-cluster"
           />
-          {ecsClusters.length > 0 && (
-            <datalist id="ecsClusterOptions">
-              {ecsClusters.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          )}
         </label>
-        {ecsClusterLoading && <small>Loading ECS clusters…</small>}
-        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
+        <small>Clusters refresh automatically when you change the AWS region.</small>
         <label>
           GCP Project ID
           <input value={ecsTfGcpProject} onChange={(e) => setEcsTfGcpProject(e.target.value)} placeholder="my-gcp-project" />
@@ -1717,14 +1821,6 @@ const App = () => {
           />
           <span>Restrict control plane to private endpoint</span>
         </label>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={ecsTfSkipValidate}
-            onChange={(e) => setEcsTfSkipValidate(e.target.checked)}
-          />
-          <span>Skip terraform init/validate (recommended if Terraform is not installed)</span>
-        </label>
       </fieldset>
       <fieldset>
         <legend>ECS Services & Output</legend>
@@ -1740,7 +1836,7 @@ const App = () => {
               </button>
             </div>
           </div>
-          {ecsServicesLoading && <small>Loading ECS services…</small>}
+          {ecsServicesLoading && <small>Loading ECS services...</small>}
           {ecsServicesError && <div className="error">{ecsServicesError}</div>}
           {!ecsServices.length && !ecsServicesLoading && <small>No ECS services detected for this cluster.</small>}
           <div className="checkbox-grid">
@@ -1777,28 +1873,163 @@ const App = () => {
       </>
       )}
 
+      {view === 'eks_terraform' && (
+        <>
+          <fieldset>
+            <legend>EKS Cluster & Target</legend>
+            <label>
+              EKS Cluster
+              <select value={eksClusterSelectValue} onChange={(e) => setEksClusterName(e.target.value)} disabled={!eksClusters.length}>
+                <option value="">-- Select cluster --</option>
+                {eksClusters.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {eksClusterLoading && <small>Loading EKS clusters...</small>}
+            {eksClusterError && <div className="error">{eksClusterError}</div>}
+            <label>
+              Cluster Name (manual override)
+              <input value={eksClusterName} onChange={(e) => setEksClusterName(e.target.value)} placeholder="my-eks-cluster" />
+            </label>
+            <label>
+              GCP Project ID
+              <input value={eksTfGcpProject} onChange={(e) => setEksTfGcpProject(e.target.value)} placeholder="my-gcp-project" />
+            </label>
+            <label>
+              GCP Location
+              <select value={eksTfGcpLocation} onChange={(e) => setEksTfGcpLocation(e.target.value)}>
+                {GCP_REGIONS.map((region) => (
+                  <option key={region.id} value={region.id}>
+                    {region.display}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              GKE Cluster Name (optional)
+              <input value={eksTfGkeName} onChange={(e) => setEksTfGkeName(e.target.value)} placeholder={`${eksClusterName || 'cluster'}-gke`} />
+            </label>
+            <label>
+              GCP VPC Network (optional)
+              <input value={eksTfNetwork} onChange={(e) => setEksTfNetwork(e.target.value)} placeholder="shared-vpc" />
+            </label>
+            <label>
+              GCP Subnetwork (optional)
+              <input value={eksTfSubnetwork} onChange={(e) => setEksTfSubnetwork(e.target.value)} placeholder="gke-subnet" />
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>Node Sizing & Controls</legend>
+            <label>
+              Node Machine Type
+              <input value={eksTfMachineType} onChange={(e) => setEksTfMachineType(e.target.value)} placeholder="e2-standard-4" />
+            </label>
+            <label>
+              Node CPU (vCPU, optional)
+              <input value={eksTfNodeCpu} onChange={(e) => setEksTfNodeCpu(e.target.value)} placeholder="4" />
+            </label>
+            <label>
+              Node Memory (MB, optional)
+              <input value={eksTfNodeMem} onChange={(e) => setEksTfNodeMem(e.target.value)} placeholder="16384" />
+            </label>
+            <label>
+              Min Nodes
+              <input value={eksTfMinNodes} onChange={(e) => setEksTfMinNodes(e.target.value)} placeholder="3" />
+            </label>
+            <label>
+              Max Nodes
+              <input value={eksTfMaxNodes} onChange={(e) => setEksTfMaxNodes(e.target.value)} placeholder="6" />
+            </label>
+            <label>
+              Node Locations (comma-separated, optional)
+              <input value={eksTfNodeLocations} onChange={(e) => setEksTfNodeLocations(e.target.value)} placeholder="us-central1-a,us-central1-b" />
+            </label>
+            <label>
+              Node Service Account (optional)
+              <input value={eksTfServiceAccount} onChange={(e) => setEksTfServiceAccount(e.target.value)} placeholder="gke-nodes@project.iam.gserviceaccount.com" />
+            </label>
+            <label>
+              Release Channel
+              <input value={eksTfReleaseChannel} onChange={(e) => setEksTfReleaseChannel(e.target.value)} placeholder="REGULAR" />
+            </label>
+            <label>
+              Master IPv4 CIDR (/28, optional)
+              <input value={eksTfMasterCidr} onChange={(e) => setEksTfMasterCidr(e.target.value)} placeholder="172.16.0.0/28" />
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={eksTfPrivateNodes}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setEksTfPrivateNodes(checked);
+                  if (!checked) {
+                    setEksTfPrivateEndpoint(false);
+                  }
+                }}
+              />
+              <span>Use private nodes</span>
+            </label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={eksTfPrivateEndpoint} onChange={(e) => setEksTfPrivateEndpoint(e.target.checked)} disabled={!eksTfPrivateNodes} />
+              <span>Restrict control plane to private endpoint</span>
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>Terraform Bundle</legend>
+            <div className="info-callout">
+              Always runs <code>terraform init</code> and <code>terraform validate</code>; ensure Terraform CLI is installed on the backend host.
+            </div>
+            <button onClick={runEksTerraformTask} disabled={!authReady || !eksClusterName || !eksTfGcpProject.trim()}>
+              Generate EKS Terraform Bundle
+            </button>
+            {eksTfError && <div className="error">{eksTfError}</div>}
+            <h3>Logs</h3>
+            <pre>{eksTfLogs || 'Logs will appear here once a run starts.'}</pre>
+            <h3>Artifacts</h3>
+            <div className="artifacts">
+              {eksTfArtifacts.map((artifact) => (
+                <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+                  Download {artifact.filename}
+                </a>
+              ))}
+            </div>
+          </fieldset>
+        </>
+      )}
+
       {view === 'ecs_manifests' && (
       <>
       <fieldset>
         <legend>ECS Cluster & Services</legend>
         <label>
           ECS Cluster
+          <select
+            value={ecsClusterSelectValue}
+            onChange={(e) => setEcsClusterName(e.target.value)}
+            disabled={!ecsClusters.length}
+          >
+            <option value="">-- Select cluster --</option>
+            {ecsClusters.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {ecsClusterLoading && <small>Loading ECS clusters...</small>}
+        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
+        <label>
+          Cluster Name (manual override)
           <input
-            list="ecsClusterOptionsManifest"
             value={ecsClusterName}
             onChange={(e) => setEcsClusterName(e.target.value)}
             placeholder="my-ecs-cluster"
           />
-          {ecsClusters.length > 0 && (
-            <datalist id="ecsClusterOptionsManifest">
-              {ecsClusters.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          )}
         </label>
-        {ecsClusterLoading && <small>Loading ECS clusters…</small>}
-        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
         <div className="aws-subnet-selector">
           <div className="label-row">
             <label>Services to convert</label>
@@ -1811,7 +2042,7 @@ const App = () => {
               </button>
             </div>
           </div>
-          {ecsServicesLoading && <small>Loading ECS services…</small>}
+          {ecsServicesLoading && <small>Loading ECS services...</small>}
           {ecsServicesError && <div className="error">{ecsServicesError}</div>}
           <div className="checkbox-grid">
             {ecsServices.map((service) => (
@@ -1826,40 +2057,12 @@ const App = () => {
             ))}
           </div>
         </div>
-        <label>
-          Kubernetes Namespace (optional)
-          <input value={ecsManifestNamespace} onChange={(e) => setEcsManifestNamespace(e.target.value)} placeholder="team-namespace" />
-        </label>
       </fieldset>
       <fieldset>
-        <legend>Gemini Generation</legend>
-        <label>
-          AWS Credential Placeholders
-          <select value={ecsManifestAwsMode} onChange={(e) => setEcsManifestAwsMode(e.target.value)}>
-            <option value="auto">Auto (prompt per service)</option>
-            <option value="yes">Always inject placeholders</option>
-            <option value="no">Do not inject AWS credentials</option>
-          </select>
-        </label>
-        <label>
-          Gemini Model (optional)
-          <input value={ecsManifestModel} onChange={(e) => setEcsManifestModel(e.target.value)} placeholder="gemini-1.5-flash" />
-        </label>
-        <label>
-          Gemini Fallback Models (comma-separated)
-          <input value={ecsManifestFallbacks} onChange={(e) => setEcsManifestFallbacks(e.target.value)} placeholder="gemini-1.5-pro,gemini-1.0-pro" />
-        </label>
-        <label>
-          Gemini API Key Override (optional)
-          <input
-            type="password"
-            value={ecsManifestApiKey}
-            onChange={(e) => setEcsManifestApiKey(e.target.value)}
-            placeholder="AIza..."
-          />
-        </label>
+        <legend>Manifest Generation</legend>
         <div className="info-callout">
-          Requires the google-generativeai SDK and a valid GEMINI_API_KEY. Supply the key here or set it on the backend host.
+          Gemini model, fallbacks, and credential settings are controlled via the server <code>.env</code>. Update the backend
+          configuration to change these defaults.
         </div>
         <button onClick={runEcsManifestTask} disabled={!authReady || !ecsClusterName}>
           Generate Kubernetes Manifests
@@ -1886,7 +2089,7 @@ const App = () => {
         {showGcpSubnetOverlay && (
           <div className="loading-overlay">
             <div>
-              <strong>Loading GCP subnets…</strong>
+              <strong>Loading GCP subnets...</strong>
               <small>Please wait until loading completes before changing region or network.</small>
             </div>
           </div>

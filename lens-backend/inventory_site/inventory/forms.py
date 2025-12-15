@@ -1,9 +1,13 @@
 import base64
 import json
+import os
 
 from django import forms
 
+from inventory.env import load_local_env
 from inventory.services.aws_inventory import RESOURCE_MAP
+
+load_local_env()
 
 
 def _resource_choices():
@@ -337,7 +341,6 @@ class EcsTerraformForm(AutomationTaskForm):
     node_pools = forms.JSONField(required=False, label="Node Pools JSON Override")
 
     services = forms.JSONField(required=False, label="Selected ECS Services")
-    skip_terraform_validate = forms.BooleanField(required=False, initial=True, label="Skip terraform validate")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -369,6 +372,45 @@ class EcsTerraformForm(AutomationTaskForm):
         return cleaned
 
 
+class EksTerraformForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region")
+    cluster_name = forms.CharField(label="EKS Cluster Name")
+
+    gcp_project = forms.CharField(label="GCP Project ID")
+    gcp_location = forms.CharField(label="GCP Location")
+    gke_cluster_name = forms.CharField(required=False, label="GKE Cluster Name")
+
+    machine_type = forms.CharField(required=False, label="Node Machine Type")
+    node_cpu = forms.FloatField(required=False, label="Node CPU (vCPU)")
+    node_memory = forms.IntegerField(required=False, label="Node Memory (MB)")
+    min_nodes = forms.IntegerField(required=False, label="Min Nodes")
+    max_nodes = forms.IntegerField(required=False, label="Max Nodes")
+    node_locations = forms.CharField(required=False, label="Node Locations", help_text="Comma-separated list of GCP zones.")
+
+    network = forms.CharField(required=False, label="GCP Network")
+    subnetwork = forms.CharField(required=False, label="GCP Subnetwork")
+    service_account = forms.CharField(required=False, label="Node Service Account")
+    release_channel = forms.CharField(required=False, label="GKE Release Channel")
+
+    private_nodes = forms.BooleanField(required=False, initial=True, label="Use Private Nodes")
+    private_endpoint = forms.BooleanField(required=False, label="Enable Private Control-Plane Endpoint")
+    master_ipv4_cidr = forms.CharField(required=False, label="Master IPv4 /28 CIDR")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "eks_terraform"
+
+    def clean(self):
+        cleaned = super().clean()
+        required_fields = ["access_key", "secret_key", "aws_region", "cluster_name", "gcp_project", "gcp_location"]
+        for field in required_fields:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+        return cleaned
+
+
 class EcsManifestForm(AutomationTaskForm):
     access_key = forms.CharField(label="AWS Access Key ID")
     secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
@@ -382,6 +424,7 @@ class EcsManifestForm(AutomationTaskForm):
         choices=(("auto", "Auto"), ("yes", "Always inject placeholders"), ("no", "Skip AWS placeholders")),
         initial="auto",
         label="Inject AWS Credential Secrets",
+        required=False,
     )
     gemini_model = forms.CharField(required=False, label="Gemini Model")
     gemini_fallbacks = forms.CharField(required=False, label="Gemini Fallbacks", help_text="Comma-separated list.")
@@ -408,5 +451,20 @@ class EcsManifestForm(AutomationTaskForm):
                 self.add_error("services", "Expected a JSON array.")
         elif not isinstance(value, list):
             self.add_error("services", "Provide a JSON array.")
+
+        defaults = {
+            "aws_credentials_mode": os.environ.get("ECS_MANIFEST_AWS_CREDENTIAL_MODE"),
+            "gemini_model": os.environ.get("ECS_MANIFEST_GEMINI_MODEL"),
+            "gemini_fallbacks": os.environ.get("ECS_MANIFEST_GEMINI_FALLBACKS"),
+            "gemini_api_key": os.environ.get("ECS_MANIFEST_GEMINI_API_KEY_OVERRIDE"),
+        }
+        if not cleaned.get("aws_credentials_mode"):
+            cleaned["aws_credentials_mode"] = defaults["aws_credentials_mode"] or "auto"
+        if not cleaned.get("gemini_model") and defaults["gemini_model"]:
+            cleaned["gemini_model"] = defaults["gemini_model"]
+        if not cleaned.get("gemini_fallbacks") and defaults["gemini_fallbacks"]:
+            cleaned["gemini_fallbacks"] = defaults["gemini_fallbacks"]
+        if not cleaned.get("gemini_api_key") and defaults["gemini_api_key"]:
+            cleaned["gemini_api_key"] = defaults["gemini_api_key"]
 
         return cleaned

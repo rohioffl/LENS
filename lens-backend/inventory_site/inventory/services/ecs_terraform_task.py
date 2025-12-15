@@ -144,7 +144,7 @@ def _build_args(clean_data: dict, node_pools: List[dict]):
         master_ipv4_cidr=clean_data.get("master_ipv4_cidr"),
         node_pools=node_pools,
         output_root=".",
-        skip_terraform_validate=bool(clean_data.get("skip_terraform_validate", True)),
+        skip_terraform_validate=bool(clean_data.get("skip_terraform_validate", False)),
     )
 
 
@@ -222,7 +222,7 @@ def run_ecs_terraform_task(clean_data: dict) -> TaskExecutionResult:
     try:
         helper.write_terraform_files(bundle, str(temp_dir), overwrite=True)
         validation_messages: List[str] = []
-        if not bool(clean_data.get("skip_terraform_validate", True)):
+        if not bool(clean_data.get("skip_terraform_validate", False)):
             try:
                 validation_messages = helper.terraform_cli_validate(str(temp_dir))
             except RuntimeError as exc:

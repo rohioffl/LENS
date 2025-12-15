@@ -1,5 +1,9 @@
 from django.apps import AppConfig
 
+from .env import load_local_env
+
+load_local_env()
+
 
 class InventoryConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
@@ -11,6 +15,7 @@ class InventoryConfig(AppConfig):
             aws_task,  # noqa: F401
             terraform_task,  # noqa: F401
             ecs_terraform_task,  # noqa: F401
+            eks_terraform_task,  # noqa: F401
             ecs_manifest_task,  # noqa: F401
             classic_vpn_task,  # noqa: F401
             ecr_migration_task,  # noqa: F401

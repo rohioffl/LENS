@@ -47,6 +47,18 @@ def _zip_directory(path: Path) -> bytes:
 def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
     if not SCRIPT_PATH.exists():
         raise TaskExecutionError("Helper script feature/ecs2gke-manifest.py not found.")
+    aws_mode = (
+        clean_data.get("aws_credentials_mode")
+        or os.environ.get("ECS_MANIFEST_AWS_CREDENTIAL_MODE")
+        or "yes"
+    )
+    aws_mode = aws_mode.strip().lower()
+    if aws_mode not in {"auto", "yes", "no"}:
+        aws_mode = "yes"
+    gemini_model = clean_data.get("gemini_model") or os.environ.get("ECS_MANIFEST_GEMINI_MODEL")
+    gemini_fallbacks = clean_data.get("gemini_fallbacks") or os.environ.get("ECS_MANIFEST_GEMINI_FALLBACKS")
+    gemini_api_key = clean_data.get("gemini_api_key") or os.environ.get("ECS_MANIFEST_GEMINI_API_KEY_OVERRIDE")
+
     cmd = [
         sys.executable,
         str(SCRIPT_PATH),
@@ -57,17 +69,16 @@ def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
         "--outdir",
         str(output_dir),
         "--aws-credentials",
-        clean_data.get("aws_credentials_mode") or "auto",
+        aws_mode,
     ]
-    model = clean_data.get("gemini_model")
-    if model:
-        cmd.extend(["--model", model])
+    if gemini_model:
+        cmd.extend(["--model", gemini_model])
     namespace = clean_data.get("namespace")
     if namespace:
         cmd.extend(["--namespace", namespace])
     for svc in clean_data.get("services") or []:
         cmd.extend(["--service", svc])
-    for fb in _split_csv(clean_data.get("gemini_fallbacks")):
+    for fb in _split_csv(gemini_fallbacks):
         cmd.extend(["--fallback-model", fb])
 
     env = os.environ.copy()
@@ -79,9 +90,10 @@ def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
             "AWS_REGION": clean_data["aws_region"],
             "AWS_PAGER": "",
             "PYTHONUNBUFFERED": "1",
+            "ECS2GKE_AUTO_APPROVE": "1",
         }
     )
-    gemini_key = clean_data.get("gemini_api_key")
+    gemini_key = gemini_api_key or env.get("GEMINI_API_KEY")
     if gemini_key:
         env["GEMINI_API_KEY"] = gemini_key
     elif not env.get("GEMINI_API_KEY"):

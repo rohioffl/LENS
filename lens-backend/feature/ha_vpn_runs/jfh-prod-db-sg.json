@@ -1,0 +1,95 @@
+{
+  "aws_tunnels": [
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.139.14",
+      "outside_ip": "18.139.185.93",
+      "psk": "Y4tr_k9Ou.yC5gFw1VWZYtqobhYFZgE5",
+      "vpn_inside_ip": "169.254.139.13"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.142.222",
+      "outside_ip": "46.137.221.232",
+      "psk": "jUwv4hzUifD.WtMruT7baOUYmab3pyF9",
+      "vpn_inside_ip": "169.254.142.221"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.99.118",
+      "outside_ip": "13.215.21.148",
+      "psk": "UKACu_tU80iH0V.58ovkMvMauXO0muEU",
+      "vpn_inside_ip": "169.254.99.117"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.136.110",
+      "outside_ip": "13.228.214.105",
+      "psk": "VxchE.euQ6qY2nSIo_xAKaZjcSnyTBLA",
+      "vpn_inside_ip": "169.254.136.109"
+    }
+  ],
+  "config": {
+    "aws_asn": 64522,
+    "aws_region": "ap-southeast-1",
+    "aws_vpc_id": "vpc-9f6205fa",
+    "gcp_asn": 64567,
+    "gcp_network": "herkey-vpc-prod-1",
+    "gcp_project": "prime-elf-480312-e5",
+    "gcp_region": "asia-southeast1"
+  },
+  "prefix": "jfh-prod-db-sg",
+  "resources": {
+    "aws_cgw_ids": [
+      "cgw-0640599b9a715facd",
+      "cgw-0d3a81ae8bd70d85b"
+    ],
+    "aws_vgw_id": "vgw-07171cc9a8eb021ed",
+    "aws_vpn_ids": [
+      "vpn-0acee405c824e96b6",
+      "vpn-0401016c6d6a92561"
+    ],
+    "gcp_ha_gateway": "jfh-prod-db-sg-ha-gateway",
+    "gcp_interface_ips": [
+      "34.152.104.153",
+      "34.128.60.48"
+    ],
+    "gcp_peer_gateway": "jfh-prod-db-sg-aws-peer-gateway",
+    "gcp_router": "jfh-prod-db-sg-router",
+    "gcp_tunnels": [
+      {
+        "aws_interface": 0,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/prime-elf-480312-e5/regions/asia-southeast1/vpnTunnels/jfh-prod-db-sg-tunnel-0",
+        "name": "jfh-prod-db-sg-tunnel-0",
+        "peer_bgp_ip": "169.254.139.13",
+        "router_bgp_ip": "169.254.139.14"
+      },
+      {
+        "aws_interface": 1,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/prime-elf-480312-e5/regions/asia-southeast1/vpnTunnels/jfh-prod-db-sg-tunnel-1",
+        "name": "jfh-prod-db-sg-tunnel-1",
+        "peer_bgp_ip": "169.254.142.221",
+        "router_bgp_ip": "169.254.142.222"
+      },
+      {
+        "aws_interface": 2,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/prime-elf-480312-e5/regions/asia-southeast1/vpnTunnels/jfh-prod-db-sg-tunnel-2",
+        "name": "jfh-prod-db-sg-tunnel-2",
+        "peer_bgp_ip": "169.254.99.117",
+        "router_bgp_ip": "169.254.99.118"
+      },
+      {
+        "aws_interface": 3,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/prime-elf-480312-e5/regions/asia-southeast1/vpnTunnels/jfh-prod-db-sg-tunnel-3",
+        "name": "jfh-prod-db-sg-tunnel-3",
+        "peer_bgp_ip": "169.254.136.109",
+        "router_bgp_ip": "169.254.136.110"
+      }
+    ]
+  },
+  "timestamp": "2025-12-15T06:19:31.767605+00:00"
+}

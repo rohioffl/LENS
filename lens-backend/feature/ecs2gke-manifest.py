@@ -158,12 +158,12 @@ def _list_ecs_clusters(region: str) -> list[str]:
         try:
             raw = subprocess.check_output(cmd, text=True)
         except subprocess.CalledProcessError as exc:
-            print(f"⚠️ Failed to list ECS clusters in region '{region}': {exc}")
+            print(f"[WARN] Failed to list ECS clusters in region '{region}': {exc}")
             break
         try:
             payload = json.loads(raw) if raw else {}
         except json.JSONDecodeError as exc:
-            print(f"⚠️ Could not parse list-clusters response: {exc}")
+            print(f"[WARN] Could not parse list-clusters response: {exc}")
             break
         clusters.extend(payload.get("clusterArns", []))
         starting_token = payload.get("nextToken")
@@ -335,7 +335,7 @@ class GeminiModelClient:
                 response = model.generate_content(prompt)
                 if idx > 0:
                     print(
-                        f"ℹ️ Service {service_name}: using fallback Gemini model '{model_name}'"
+                        f"[INFO] Service {service_name}: using fallback Gemini model '{model_name}'"
                     )
                 response_text = _response_to_text(response)
                 if response_text:
@@ -496,10 +496,10 @@ def _resolve_secret_source(value_from: str, region: str, cache: dict) -> str | b
             parameter_payload = json.loads(raw) if raw else {}
             cache[value_from] = parameter_payload.get("Parameter", {}).get("Value")
     except subprocess.CalledProcessError as exc:
-        print(f"⚠️ Failed to resolve parameter '{value_from}': {exc}")
+        print(f"[WARN] Failed to resolve parameter '{value_from}': {exc}")
         cache[value_from] = None
     except json.JSONDecodeError as exc:
-        print(f"⚠️ Unexpected response while resolving parameter '{value_from}': {exc}")
+        print(f"[WARN] Unexpected response while resolving parameter '{value_from}': {exc}")
         cache[value_from] = None
 
     return cache.get(value_from)
@@ -573,7 +573,7 @@ def build_env_manifests(service_name: str, namespace: str, task_def: dict, regio
             resolved = _resolve_secret_source(value_from, region, parameter_cache)
             if resolved is None:
                 print(
-                    f"⚠️ Skipping secret '{env_var_name}' in container '{container_name}' (unable to resolve '{value_from}')"
+                    f"[WARN] Skipping secret '{env_var_name}' in container '{container_name}' (unable to resolve '{value_from}')"
                 )
                 continue
             encoded = _encode_secret_value(resolved)
@@ -1047,9 +1047,9 @@ def save_yaml_files(
         try:
             parsed_docs = list(yaml.safe_load_all(cleaned_output))
         except yaml.YAMLError as exc:
-            print(f"⚠️ Failed to parse YAML: {exc}")
+            print(f"[WARN] Failed to parse YAML: {exc}")
     else:
-        print("ℹ️ No YAML content detected from Gemini after cleaning.")
+        print("[INFO] No YAML content detected from Gemini after cleaning.")
 
     doc_keys = set()
     normalized_docs: list[dict] = []
@@ -1087,7 +1087,7 @@ def save_yaml_files(
         _append_doc(doc)
 
     if not normalized_docs:
-        print("⚠️ No Kubernetes manifests generated after processing, skipping write.")
+        print("[WARN] No Kubernetes manifests generated after processing, skipping write.")
         return
 
     files_to_docs: dict[str, list[dict]] = {}
@@ -1115,10 +1115,10 @@ def save_yaml_files(
                 yaml.safe_dump(document, fh, sort_keys=False)
                 if idx < len(doc_list) - 1:
                     fh.write("\n---\n")
-        print(f"📝 Wrote {file_path}")
+        print(f"[WRITE] Wrote {file_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="ECS Cluster → GKE Migration with Gemini")
+    parser = argparse.ArgumentParser(description="ECS Cluster -> GKE Migration with Gemini")
     parser.add_argument("--cluster", help="ECS cluster name")
     parser.add_argument("--region", help="AWS region")
     parser.add_argument("--outdir", default="ecs", help="Base output folder (default: ecs/)")
@@ -1132,7 +1132,7 @@ def main():
     parser.add_argument(
         "--aws-credentials",
         choices=["auto", "yes", "no"],
-        default="auto",
+        default=(os.environ.get("ECS_MANIFEST_AWS_CREDENTIAL_MODE") or "auto"),
         help="Whether to inject AWS credential placeholders into manifests (default: auto, prompt when interactive).",
     )
     parser.add_argument(
@@ -1183,7 +1183,7 @@ def main():
     cluster_dir = Path(args.outdir) / args.cluster
     cluster_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"🔍 Fetching ECS services from cluster {args.cluster}...")
+    print(f"[INFO] Fetching ECS services from cluster {args.cluster}...")
     svc_list = subprocess.check_output(
         ["aws", "ecs", "list-services", "--cluster", args.cluster, "--region", args.region],
         text=True
@@ -1203,7 +1203,7 @@ def main():
             if name in service_map and name not in selected_services:
                 selected_services.append(name)
             elif name not in service_map:
-                print(f"⚠️ Requested service '{name}' not found in cluster {args.cluster}.")
+                print(f"[WARN] Requested service '{name}' not found in cluster {args.cluster}.")
         if not selected_services:
             print("No matching services for provided --service arguments. Nothing to do.")
             return
@@ -1215,13 +1215,15 @@ def main():
     else:
         selected_services = service_names
 
-    print(f"✅ Selected services: {', '.join(selected_services)}")
+    print(f"[OK] Selected services: {', '.join(selected_services)}")
 
-    aws_pref = args.aws_credentials
+    aws_pref = (args.aws_credentials or "auto").strip().lower()
+    if aws_pref not in {"auto", "yes", "no"}:
+        aws_pref = "auto"
 
     for svc_name in selected_services:
         svc_arn = service_map[svc_name]
-        print(f"➡️ Processing service: {svc_name}")
+        print(f"[ACTION] Processing service: {svc_name}")
 
         svc_desc = subprocess.check_output(
             ["aws", "ecs", "describe-services", "--cluster", args.cluster, "--services", svc_name, "--region", args.region],
@@ -1249,22 +1251,19 @@ def main():
         default_namespace = _to_k8s_name(args.cluster, svc_name, "ns", default=f"{svc_name}-ns")
         if user_namespace:
             namespace = user_namespace
-        elif sys.stdin.isatty():
-            prompt = f"Enter namespace for service {svc_name} (default: {default_namespace}): "
-            namespace_choice = _prompt_for_value(None, prompt, allow_empty=True)
-            namespace = (
-                _to_k8s_name(namespace_choice, default=namespace_choice or default_namespace)
-                if namespace_choice
-                else default_namespace
-            )
         else:
             namespace = default_namespace
-        print(f"   • Using namespace: {namespace}")
+        print(f"   - Using namespace: {namespace}")
 
+        auto_approve_env = os.environ.get("ECS2GKE_AUTO_APPROVE", "").strip()
         if aws_pref == "yes":
             inject_aws_credentials = True
         elif aws_pref == "no":
             inject_aws_credentials = False
+        elif aws_pref == "auto" and auto_approve_env:
+            inject_aws_credentials = True
+        elif aws_pref == "auto" and not sys.stdin.isatty():
+            inject_aws_credentials = True
         else:
             inject_aws_credentials = _prompt_yes_no(
                 f"Add AWS credential placeholders for service {svc_name}?",
@@ -1278,7 +1277,7 @@ def main():
         try:
             yaml_output = call_gemini(gemini_client, svc_name, task_def, svc_data, namespace)
         except RuntimeError as exc:
-            print(f"❌ Skipping service {svc_name}: {exc}")
+            print(f"[ERROR] Skipping service {svc_name}: {exc}")
             continue
         print("RAW GEMINI OUTPUT:\n", yaml_output)
         service_dir = cluster_dir / svc_name  # <-- Define service_dir here
@@ -1293,7 +1292,7 @@ def main():
             inject_aws_credentials=inject_aws_credentials,
         )
 
-    print(f"✅ Migration complete. All YAMLs stored under {cluster_dir}/")
+    print(f"[DONE] Migration complete. All YAMLs stored under {cluster_dir}/")
 
 if __name__ == "__main__":
     main()
