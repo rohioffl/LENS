@@ -349,12 +349,54 @@ const App = () => {
   const [haError, setHaError] = useState('');
   const [haArtifacts, setHaArtifacts] = useState([]);
   const [haAsnError, setHaAsnError] = useState('');
+  const [ecsClusters, setEcsClusters] = useState([]);
+  const [ecsClusterLoading, setEcsClusterLoading] = useState(false);
+  const [ecsClusterError, setEcsClusterError] = useState('');
+  const [ecsClusterName, setEcsClusterName] = useState('');
+  const [ecsServices, setEcsServices] = useState([]);
+  const [ecsServicesLoading, setEcsServicesLoading] = useState(false);
+  const [ecsServicesError, setEcsServicesError] = useState('');
+  const [ecsTerraformServices, setEcsTerraformServices] = useState([]);
+  const [ecsManifestServices, setEcsManifestServices] = useState([]);
+  const [ecsTfGcpProject, setEcsTfGcpProject] = useState('');
+  const [ecsTfGcpLocation, setEcsTfGcpLocation] = useState('us-central1');
+  const [ecsTfGkeName, setEcsTfGkeName] = useState('');
+  const [ecsTfMachineType, setEcsTfMachineType] = useState('e2-standard-4');
+  const [ecsTfNodeCpu, setEcsTfNodeCpu] = useState('');
+  const [ecsTfNodeMem, setEcsTfNodeMem] = useState('');
+  const [ecsTfMinNodes, setEcsTfMinNodes] = useState('3');
+  const [ecsTfMaxNodes, setEcsTfMaxNodes] = useState('6');
+  const [ecsTfNodeLocations, setEcsTfNodeLocations] = useState('');
+  const [ecsTfNetwork, setEcsTfNetwork] = useState('');
+  const [ecsTfSubnetwork, setEcsTfSubnetwork] = useState('');
+  const [ecsTfServiceAccount, setEcsTfServiceAccount] = useState('');
+  const [ecsTfReleaseChannel, setEcsTfReleaseChannel] = useState('REGULAR');
+  const [ecsTfMasterCidr, setEcsTfMasterCidr] = useState('');
+  const [ecsTfNodePoolName, setEcsTfNodePoolName] = useState('primary');
+  const [ecsTfNodePoolSubnet, setEcsTfNodePoolSubnet] = useState('');
+  const [ecsTfNodePoolZones, setEcsTfNodePoolZones] = useState('');
+  const [ecsTfPrivateNodes, setEcsTfPrivateNodes] = useState(true);
+  const [ecsTfPrivateEndpoint, setEcsTfPrivateEndpoint] = useState(false);
+  const [ecsTfSkipValidate, setEcsTfSkipValidate] = useState(true);
+  const [ecsTfLogs, setEcsTfLogs] = useState('');
+  const [ecsTfError, setEcsTfError] = useState('');
+  const [ecsTfArtifacts, setEcsTfArtifacts] = useState([]);
+  const [ecsManifestNamespace, setEcsManifestNamespace] = useState('');
+  const [ecsManifestAwsMode, setEcsManifestAwsMode] = useState('auto');
+  const [ecsManifestModel, setEcsManifestModel] = useState('gemini-1.5-flash');
+  const [ecsManifestFallbacks, setEcsManifestFallbacks] = useState('');
+  const [ecsManifestApiKey, setEcsManifestApiKey] = useState('');
+  const [ecsManifestLogs, setEcsManifestLogs] = useState('');
+  const [ecsManifestError, setEcsManifestError] = useState('');
+  const [ecsManifestArtifacts, setEcsManifestArtifacts] = useState([]);
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
   useArtifactCleanup(haArtifacts);
   useArtifactCleanup(classicArtifacts);
   useArtifactCleanup(ecrArtifacts);
+  useArtifactCleanup(ecsTfArtifacts);
+  useArtifactCleanup(ecsManifestArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
@@ -376,12 +418,16 @@ const App = () => {
   const vpnViews = ['ha_vpn', 'classic_vpn'];
   const isVpnView = vpnViews.includes(view);
   const vpnLegendLabel = view === 'classic_vpn' ? 'Classic VPN' : 'HA VPN';
+  const showAwsSubnetSelector = isVpnView && subnetRows.length > 0;
+  const showGcpSubnetSelector = view === 'classic_vpn' && gcpSubnetOptions.length > 0;
+  const showGcpSubnetOverlay = view === 'classic_vpn' && vpnSubnetsLoading;
 
   useEffect(() => {
     if (!resolvedRegion) return;
     const mapped = AWS_TO_GCP_REGION[resolvedRegion];
     if (mapped) {
       setEcrGcpRegion(mapped);
+      setEcsTfGcpLocation(mapped);
     }
   }, [resolvedRegion]);
 
@@ -560,6 +606,72 @@ const App = () => {
   }, [ecrServiceKey, view, ecrGcpProject]);
 
   useEffect(() => {
+    if (!authReady || !['ecs_terraform', 'ecs_manifests'].includes(view)) {
+      setEcsClusters([]);
+      setEcsClusterError('');
+      setEcsClusterLoading(false);
+      return;
+    }
+    setEcsClusterLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/aws/ecs/clusters/', {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          region: resolvedRegion,
+        });
+        const items = res.clusters || [];
+        setEcsClusters(items);
+        if (!ecsClusterName && items.length) {
+          setEcsClusterName(items[0]);
+        }
+        setEcsClusterError('');
+      } catch (err) {
+        setEcsClusterError(err.message || String(err));
+        setEcsClusters([]);
+      } finally {
+        setEcsClusterLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [authReady, awsAccess, awsSecret, resolvedRegion, view]);
+
+  useEffect(() => {
+    if (!authReady || !ecsClusterName || !['ecs_terraform', 'ecs_manifests'].includes(view)) {
+      setEcsServices([]);
+      setEcsServicesError('');
+      setEcsServicesLoading(false);
+      setEcsTerraformServices([]);
+      setEcsManifestServices([]);
+      return;
+    }
+    setEcsServicesLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/aws/ecs/services/', {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          region: resolvedRegion,
+          cluster: ecsClusterName,
+        });
+        const items = res.services || [];
+        setEcsServices(items);
+        setEcsServicesError('');
+        setEcsTerraformServices((prev) => (prev.length ? prev.filter((svc) => items.includes(svc)) : items));
+        setEcsManifestServices((prev) => (prev.length ? prev.filter((svc) => items.includes(svc)) : items));
+      } catch (err) {
+        setEcsServicesError(err.message || String(err));
+        setEcsServices([]);
+        setEcsTerraformServices([]);
+        setEcsManifestServices([]);
+      } finally {
+        setEcsServicesLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [authReady, awsAccess, awsSecret, resolvedRegion, ecsClusterName, view]);
+
+  useEffect(() => {
     if (!isVpnView) {
       setVpnProjectOptions([]);
       setVpnProjectError('');
@@ -635,7 +747,8 @@ const App = () => {
 
   useEffect(() => {
     const requestId = ++gcpSubnetRequestRef.current;
-    if (!isVpnView) {
+    const shouldLoadSubnets = view === 'classic_vpn';
+    if (!shouldLoadSubnets || !isVpnView) {
       setVpnGcpSubnets([]);
       setSelectedGcpSubnets([]);
       setVpnSubnetError('');
@@ -753,6 +866,23 @@ const App = () => {
     ));
   };
 
+  const toggleTerraformService = (service) => {
+    setEcsTerraformServices((prev) =>
+      prev.includes(service) ? prev.filter((item) => item !== service) : [...prev, service]
+    );
+  };
+
+  const toggleManifestService = (service) => {
+    setEcsManifestServices((prev) =>
+      prev.includes(service) ? prev.filter((item) => item !== service) : [...prev, service]
+    );
+  };
+
+  const selectAllTerraformServices = () => setEcsTerraformServices(ecsServices);
+  const clearTerraformServices = () => setEcsTerraformServices([]);
+  const selectAllManifestServices = () => setEcsManifestServices(ecsServices);
+  const clearManifestServices = () => setEcsManifestServices([]);
+
   const runTerraformTask = async () => {
     setTfError('');
     setTfLogs('Submitting Terraform bundle request...\n');
@@ -783,6 +913,85 @@ const App = () => {
       setTfArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setTfError(err.message || String(err));
+    }
+  };
+
+  const runEcsTerraformTask = async () => {
+    setEcsTfError('');
+    setEcsTfLogs('Planning ECS → GKE Terraform bundle...\n');
+    setEcsTfArtifacts([]);
+    if (!authReady || !ecsClusterName || !ecsTfGcpProject.trim() || !ecsTfGcpLocation.trim()) {
+      setEcsTfError('AWS creds, ECS cluster, and GCP fields are required.');
+      return;
+    }
+    try {
+      const payload = {
+        access_key: awsAccess.trim(),
+        secret_key: awsSecret.trim(),
+        aws_region: resolvedRegion,
+        cluster_name: ecsClusterName,
+        gcp_project: ecsTfGcpProject.trim(),
+        gcp_location: ecsTfGcpLocation.trim(),
+        gke_cluster_name: ecsTfGkeName.trim(),
+        machine_type: ecsTfMachineType.trim(),
+        node_cpu: ecsTfNodeCpu,
+        node_memory: ecsTfNodeMem,
+        min_nodes: ecsTfMinNodes,
+        max_nodes: ecsTfMaxNodes,
+        node_locations: ecsTfNodeLocations,
+        network: ecsTfNetwork.trim(),
+        subnetwork: ecsTfSubnetwork.trim(),
+        service_account: ecsTfServiceAccount.trim(),
+        release_channel: ecsTfReleaseChannel.trim(),
+        private_nodes: ecsTfPrivateNodes,
+        private_endpoint: ecsTfPrivateEndpoint,
+        master_ipv4_cidr: ecsTfMasterCidr.trim(),
+        node_pool_name: ecsTfNodePoolName.trim(),
+        node_pool_subnet: ecsTfNodePoolSubnet.trim(),
+        node_pool_zones: ecsTfNodePoolZones,
+        services: ecsTerraformServices,
+        skip_terraform_validate: ecsTfSkipValidate,
+      };
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'ecs_terraform', data: payload },
+        (message) => setEcsTfLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setEcsTfArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setEcsTfError(err.message || String(err));
+    }
+  };
+
+  const runEcsManifestTask = async () => {
+    setEcsManifestError('');
+    setEcsManifestLogs('Submitting ECS → GKE manifest request...\n');
+    setEcsManifestArtifacts([]);
+    if (!authReady || !ecsClusterName) {
+      setEcsManifestError('AWS creds and ECS cluster are required.');
+      return;
+    }
+    try {
+      const payload = {
+        access_key: awsAccess.trim(),
+        secret_key: awsSecret.trim(),
+        aws_region: resolvedRegion,
+        cluster_name: ecsClusterName,
+        namespace: ecsManifestNamespace.trim(),
+        services: ecsManifestServices,
+        aws_credentials_mode: ecsManifestAwsMode,
+        gemini_model: ecsManifestModel.trim(),
+        gemini_fallbacks: ecsManifestFallbacks.trim(),
+        gemini_api_key: ecsManifestApiKey.trim(),
+      };
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'ecs_manifests', data: payload },
+        (message) => setEcsManifestLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setEcsManifestArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setEcsManifestError(err.message || String(err));
     }
   };
 
@@ -873,10 +1082,6 @@ const App = () => {
       setHaError('AWS creds, selected VPC, service key, project, and GCP network are required.');
       return;
     }
-    if (!selectedAwsSubnets.length || !selectedGcpSubnets.length) {
-      setHaError('Select at least one subnet in both AWS and GCP.');
-      return;
-    }
     const awsAsnValue = Number(haAwsAsn) || 64513;
     const gcpAsnValue = Number(haGcpAsn) || 64512;
     try {
@@ -897,7 +1102,6 @@ const App = () => {
             gcp_asn: gcpAsnValue,
             name_prefix: haPrefix.trim(),
             aws_subnets: selectedAwsSubnets,
-            gcp_subnets: selectedGcpSubnets,
           },
         },
         (message) => setHaLogs((prev) => mergeBackendLogs(prev, message)),
@@ -1200,6 +1404,16 @@ const App = () => {
           <p>Migrate all ECR repos to GCP Artifact Registry with parallel pushes and skip existing tags.</p>
           <button onClick={() => setView('ecr_migration')}>Migrate Repos</button>
           </div>
+        <div className="task-card">
+          <h2>ECS → GKE Terraform</h2>
+          <p>Size a regional GKE cluster from ECS services and download Terraform bundles.</p>
+          <button onClick={() => setView('ecs_terraform')}>Plan Cluster</button>
+        </div>
+        <div className="task-card">
+          <h2>ECS → GKE Manifests</h2>
+          <p>Convert ECS task definitions into curated Kubernetes manifests using Gemini.</p>
+          <button onClick={() => setView('ecs_manifests')}>Generate Manifests</button>
+        </div>
         </div>
       )}
 
@@ -1209,7 +1423,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration'].includes(view)) && (
+      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'ecs_manifests'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -1220,7 +1434,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration'].includes(view) && (
+        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'ecs_manifests'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -1247,11 +1461,15 @@ const App = () => {
               VPC
               <select value={selectedVpc} onChange={(e) => setSelectedVpc(e.target.value)}>
                 <option value="">-- Select VPC --</option>
-                {vpcs.map((vpc) => (
-                  <option key={vpc.id} value={vpc.id}>
-                    {vpc.name ? `${vpc.name} (${vpc.cidr})` : `${vpc.id} (${vpc.cidr})`}
-                  </option>
-                ))}
+                {vpcs.map((vpc) => {
+                  const labelName = vpc.name || vpc.id;
+                  const optionLabel = `${labelName} - ${vpc.id} - ${vpc.cidr || ''}`.replace(/\s+-\s+$/, '');
+                  return (
+                    <option key={vpc.id} value={vpc.id}>
+                      {optionLabel}
+                    </option>
+                  );
+                })}
               </select>
             </label>
             {view === 'terraform' && <small>Subnets load automatically once a VPC is chosen.</small>}
@@ -1259,7 +1477,7 @@ const App = () => {
             {['terraform', 'classic_vpn', 'ha_vpn'].includes(view) && subnetError && <div className="error">{subnetError}</div>}
           </>
         )}
-        {isVpnView && subnetRows.length > 0 && (
+        {showAwsSubnetSelector && (
           <div className="aws-subnet-selector">
             <div className="label-row">
               <label>AWS Subnets</label>
@@ -1272,8 +1490,11 @@ const App = () => {
                 </button>
               </div>
             </div>
+            {selectedVpc && (
+              <small className="info-callout">VPC ID: {selectedVpc}</small>
+            )}
             <small>
-              These subnets determine which route tables receive VGW propagation on the AWS side. Leave all unchecked to skip enabling propagation automatically.
+              Selected subnets determine which route tables receive VGW propagation. Leave everything selected to cover the entire VPC, or clear all to skip propagation.
             </small>
             <div className="checkbox-grid">
               {subnetRows.map((subnet) => (
@@ -1283,7 +1504,11 @@ const App = () => {
                     checked={selectedAwsSubnets.includes(subnet.id)}
                     onChange={() => toggleAwsSubnetSelection(subnet.id)}
                   />
-                  <span>{subnet.name ? `${subnet.name} (${subnet.cidr})` : `${subnet.id} (${subnet.cidr})`}</span>
+                  <span className="subnet-label">
+                    <strong>{subnet.name || subnet.id}</strong>
+                    <small>{subnet.id}</small>
+                    <small>({subnet.cidr || 'unknown'})</small>
+                  </span>
                 </label>
               ))}
             </div>
@@ -1370,11 +1595,295 @@ const App = () => {
       </fieldset>
       )}
 
+      {view === 'ecs_terraform' && (
+      <>
+      <fieldset>
+        <legend>ECS Cluster & Target</legend>
+        <label>
+          ECS Cluster
+          <input
+            list="ecsClusterOptions"
+            value={ecsClusterName}
+            onChange={(e) => setEcsClusterName(e.target.value)}
+            placeholder="my-ecs-cluster"
+          />
+          {ecsClusters.length > 0 && (
+            <datalist id="ecsClusterOptions">
+              {ecsClusters.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          )}
+        </label>
+        {ecsClusterLoading && <small>Loading ECS clusters…</small>}
+        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
+        <label>
+          GCP Project ID
+          <input value={ecsTfGcpProject} onChange={(e) => setEcsTfGcpProject(e.target.value)} placeholder="my-gcp-project" />
+        </label>
+        <label>
+          GCP Location
+          <select value={ecsTfGcpLocation} onChange={(e) => setEcsTfGcpLocation(e.target.value)}>
+            {GCP_REGIONS.map((region) => (
+              <option key={region.id} value={region.id}>
+                {region.display}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          GKE Cluster Name (optional)
+          <input value={ecsTfGkeName} onChange={(e) => setEcsTfGkeName(e.target.value)} placeholder={`${ecsClusterName || 'cluster'}-gke`} />
+        </label>
+        <label>
+          GCP VPC Network (optional)
+          <input value={ecsTfNetwork} onChange={(e) => setEcsTfNetwork(e.target.value)} placeholder="shared-vpc" />
+        </label>
+        <label>
+          GCP Subnetwork (optional)
+          <input value={ecsTfSubnetwork} onChange={(e) => setEcsTfSubnetwork(e.target.value)} placeholder="gke-subnet" />
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Node & Node Pool Sizing</legend>
+        <label>
+          Node Machine Type
+          <input value={ecsTfMachineType} onChange={(e) => setEcsTfMachineType(e.target.value)} placeholder="e2-standard-4" />
+        </label>
+        <label>
+          Node CPU (vCPU, optional)
+          <input value={ecsTfNodeCpu} onChange={(e) => setEcsTfNodeCpu(e.target.value)} placeholder="4" />
+        </label>
+        <label>
+          Node Memory (MB, optional)
+          <input value={ecsTfNodeMem} onChange={(e) => setEcsTfNodeMem(e.target.value)} placeholder="16384" />
+        </label>
+        <label>
+          Min Nodes
+          <input value={ecsTfMinNodes} onChange={(e) => setEcsTfMinNodes(e.target.value)} placeholder="3" />
+        </label>
+        <label>
+          Max Nodes
+          <input value={ecsTfMaxNodes} onChange={(e) => setEcsTfMaxNodes(e.target.value)} placeholder="6" />
+        </label>
+        <label>
+          Node Locations (comma-separated, optional)
+          <input value={ecsTfNodeLocations} onChange={(e) => setEcsTfNodeLocations(e.target.value)} placeholder="us-central1-a,us-central1-b" />
+        </label>
+        <label>
+          Node Pool Name
+          <input value={ecsTfNodePoolName} onChange={(e) => setEcsTfNodePoolName(e.target.value)} placeholder="primary" />
+        </label>
+        <label>
+          Node Pool Subnetwork (optional)
+          <input value={ecsTfNodePoolSubnet} onChange={(e) => setEcsTfNodePoolSubnet(e.target.value)} placeholder="gke-subnet" />
+        </label>
+        <label>
+          Node Pool Zones (comma-separated, optional)
+          <input value={ecsTfNodePoolZones} onChange={(e) => setEcsTfNodePoolZones(e.target.value)} placeholder="us-central1-a" />
+        </label>
+        <label>
+          Node Service Account (optional)
+          <input value={ecsTfServiceAccount} onChange={(e) => setEcsTfServiceAccount(e.target.value)} placeholder="gke-nodes@project.iam.gserviceaccount.com" />
+        </label>
+        <label>
+          Release Channel
+          <input value={ecsTfReleaseChannel} onChange={(e) => setEcsTfReleaseChannel(e.target.value)} placeholder="REGULAR" />
+        </label>
+        <label>
+          Master IPv4 CIDR (/28, optional)
+          <input value={ecsTfMasterCidr} onChange={(e) => setEcsTfMasterCidr(e.target.value)} placeholder="172.16.0.0/28" />
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={ecsTfPrivateNodes}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setEcsTfPrivateNodes(checked);
+              if (!checked) {
+                setEcsTfPrivateEndpoint(false);
+              }
+            }}
+          />
+          <span>Use private nodes</span>
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={ecsTfPrivateEndpoint}
+            onChange={(e) => setEcsTfPrivateEndpoint(e.target.checked)}
+            disabled={!ecsTfPrivateNodes}
+          />
+          <span>Restrict control plane to private endpoint</span>
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={ecsTfSkipValidate}
+            onChange={(e) => setEcsTfSkipValidate(e.target.checked)}
+          />
+          <span>Skip terraform init/validate (recommended if Terraform is not installed)</span>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>ECS Services & Output</legend>
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>ECS Services</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllTerraformServices} disabled={!ecsServices.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearTerraformServices} disabled={!ecsTerraformServices.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {ecsServicesLoading && <small>Loading ECS services…</small>}
+          {ecsServicesError && <div className="error">{ecsServicesError}</div>}
+          {!ecsServices.length && !ecsServicesLoading && <small>No ECS services detected for this cluster.</small>}
+          <div className="checkbox-grid">
+            {ecsServices.map((service) => (
+              <label key={service} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={ecsTerraformServices.includes(service)}
+                  onChange={() => toggleTerraformService(service)}
+                />
+                <span>{service}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="info-callout">
+          Generates Terraform bundles sized to your ECS footprint. AWS CLI and Terraform CLIs must be installed on the backend host.
+        </div>
+        <button onClick={runEcsTerraformTask} disabled={!authReady || !ecsClusterName || !ecsTfGcpProject.trim()}>
+          Generate ECS Terraform Bundle
+        </button>
+        {ecsTfError && <div className="error">{ecsTfError}</div>}
+        <h3>Logs</h3>
+        <pre>{ecsTfLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {ecsTfArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
+      {view === 'ecs_manifests' && (
+      <>
+      <fieldset>
+        <legend>ECS Cluster & Services</legend>
+        <label>
+          ECS Cluster
+          <input
+            list="ecsClusterOptionsManifest"
+            value={ecsClusterName}
+            onChange={(e) => setEcsClusterName(e.target.value)}
+            placeholder="my-ecs-cluster"
+          />
+          {ecsClusters.length > 0 && (
+            <datalist id="ecsClusterOptionsManifest">
+              {ecsClusters.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          )}
+        </label>
+        {ecsClusterLoading && <small>Loading ECS clusters…</small>}
+        {ecsClusterError && <div className="error">{ecsClusterError}</div>}
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Services to convert</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllManifestServices} disabled={!ecsServices.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearManifestServices} disabled={!ecsManifestServices.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {ecsServicesLoading && <small>Loading ECS services…</small>}
+          {ecsServicesError && <div className="error">{ecsServicesError}</div>}
+          <div className="checkbox-grid">
+            {ecsServices.map((service) => (
+              <label key={service} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={ecsManifestServices.includes(service)}
+                  onChange={() => toggleManifestService(service)}
+                />
+                <span>{service}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <label>
+          Kubernetes Namespace (optional)
+          <input value={ecsManifestNamespace} onChange={(e) => setEcsManifestNamespace(e.target.value)} placeholder="team-namespace" />
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Gemini Generation</legend>
+        <label>
+          AWS Credential Placeholders
+          <select value={ecsManifestAwsMode} onChange={(e) => setEcsManifestAwsMode(e.target.value)}>
+            <option value="auto">Auto (prompt per service)</option>
+            <option value="yes">Always inject placeholders</option>
+            <option value="no">Do not inject AWS credentials</option>
+          </select>
+        </label>
+        <label>
+          Gemini Model (optional)
+          <input value={ecsManifestModel} onChange={(e) => setEcsManifestModel(e.target.value)} placeholder="gemini-1.5-flash" />
+        </label>
+        <label>
+          Gemini Fallback Models (comma-separated)
+          <input value={ecsManifestFallbacks} onChange={(e) => setEcsManifestFallbacks(e.target.value)} placeholder="gemini-1.5-pro,gemini-1.0-pro" />
+        </label>
+        <label>
+          Gemini API Key Override (optional)
+          <input
+            type="password"
+            value={ecsManifestApiKey}
+            onChange={(e) => setEcsManifestApiKey(e.target.value)}
+            placeholder="AIza..."
+          />
+        </label>
+        <div className="info-callout">
+          Requires the google-generativeai SDK and a valid GEMINI_API_KEY. Supply the key here or set it on the backend host.
+        </div>
+        <button onClick={runEcsManifestTask} disabled={!authReady || !ecsClusterName}>
+          Generate Kubernetes Manifests
+        </button>
+        {ecsManifestError && <div className="error">{ecsManifestError}</div>}
+        <h3>Logs</h3>
+        <pre>{ecsManifestLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {ecsManifestArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
       {isVpnView && (
       <>
-      <fieldset className={vpnSubnetsLoading ? 'fieldset-overlay' : undefined}>
+      <fieldset className={showGcpSubnetOverlay ? 'fieldset-overlay' : undefined}>
         <legend>{vpnLegendLabel} - GCP Credentials & Network</legend>
-        {vpnSubnetsLoading && (
+        {showGcpSubnetOverlay && (
           <div className="loading-overlay">
             <div>
               <strong>Loading GCP subnets…</strong>
@@ -1433,11 +1942,11 @@ const App = () => {
             </select>
           </label>
           {vpnNetworkError && <div className="error">{vpnNetworkError}</div>}
-          {vpnSubnetsLoading && !vpnSubnetError && (
+          {showGcpSubnetOverlay && !vpnSubnetError && (
             <small>Loading subnets for {vpnGcpNetwork || 'selected network'}...</small>
           )}
           {vpnSubnetError && <div className="error">{vpnSubnetError}</div>}
-          {gcpSubnetOptions.length > 0 && (
+          {showGcpSubnetSelector && (
             <div className="aws-subnet-selector">
               <div className="label-row">
                 <label>GCP Subnets</label>

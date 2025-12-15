@@ -6,6 +6,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO, TextIOBase
 from zipfile import ZipFile
 
+import boto3
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
@@ -236,6 +237,7 @@ def _aws_creds_from_payload(payload):
     return {
         "access_key": payload.get("access_key"),
         "secret_key": payload.get("secret_key"),
+        "session_token": payload.get("session_token"),
     }
 
 
@@ -433,3 +435,75 @@ def aws_ecr_repos_api(request):
         for repo in repos
     ]
     return JsonResponse({"repos": data})
+
+
+def _boto3_client(service_name: str, region: str, creds: dict):
+    session = boto3.Session(
+        aws_access_key_id=creds.get("access_key"),
+        aws_secret_access_key=creds.get("secret_key"),
+        aws_session_token=creds.get("session_token"),
+    )
+    return session.client(service_name, region_name=region)
+
+
+@csrf_exempt
+def aws_ecs_clusters_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    if not region:
+        return JsonResponse({"error": "Missing required field 'region'."}, status=400)
+
+    creds = _aws_creds_from_payload(payload)
+    try:
+        ecs = _boto3_client("ecs", region, creds)
+        paginator = ecs.get_paginator("list_clusters")
+        names: list[str] = []
+        for page in paginator.paginate():
+            for arn in page.get("clusterArns", []):
+                if not isinstance(arn, str):
+                    continue
+                names.append(arn.split("/")[-1] if "/" in arn else arn)
+    except Exception as exc:  # pragma: no cover - runtime guard
+        return JsonResponse({"error": f"Failed to list ECS clusters: {exc}"}, status=500)
+
+    deduped = sorted(set(names))
+    return JsonResponse({"clusters": deduped})
+
+
+@csrf_exempt
+def aws_ecs_services_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    cluster = payload.get("cluster")
+    if not region or not cluster:
+        return JsonResponse({"error": "Fields 'region' and 'cluster' are required."}, status=400)
+
+    creds = _aws_creds_from_payload(payload)
+    try:
+        ecs = _boto3_client("ecs", region, creds)
+        paginator = ecs.get_paginator("list_services")
+        names: list[str] = []
+        for page in paginator.paginate(cluster=cluster):
+            for arn in page.get("serviceArns", []):
+                if not isinstance(arn, str):
+                    continue
+                names.append(arn.split("/")[-1] if "/" in arn else arn)
+    except Exception as exc:  # pragma: no cover - runtime guard
+        return JsonResponse({"error": f"Failed to list ECS services: {exc}"}, status=500)
+
+    deduped = sorted(set(names))
+    return JsonResponse({"services": deduped})

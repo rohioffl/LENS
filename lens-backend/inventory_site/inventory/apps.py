@@ -10,6 +10,8 @@ class InventoryConfig(AppConfig):
         from .services import (
             aws_task,  # noqa: F401
             terraform_task,  # noqa: F401
+            ecs_terraform_task,  # noqa: F401
+            ecs_manifest_task,  # noqa: F401
             classic_vpn_task,  # noqa: F401
             ecr_migration_task,  # noqa: F401
             ha_vpn_task,  # noqa: F401

@@ -252,10 +252,7 @@ class HaVpnForm(AutomationTaskForm):
     aws_asn = forms.IntegerField(label="AWS ASN", initial=64513, min_value=1)
     gcp_asn = forms.IntegerField(label="GCP ASN", initial=64512, min_value=1)
     name_prefix = forms.CharField(required=False, label="Resource Name Prefix")
-
-    aws_subnets = forms.JSONField(required=False, label="Selected AWS Subnets")
-    gcp_subnets = forms.JSONField(required=False, label="Selected GCP Subnets")
-
+    aws_subnets = forms.JSONField(required=False, label="AWS Subnets for Propagation")
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["task_id"].initial = self.initial.get("task_id") or "ha_vpn"
@@ -291,16 +288,125 @@ class HaVpnForm(AutomationTaskForm):
                 cleaned["gcp_project"] = project
             else:
                 self.add_error("gcp_project", "GCP project ID is required.")
-        for list_field in ("aws_subnets", "gcp_subnets"):
-            value = cleaned.get(list_field) or []
+        value = cleaned.get("aws_subnets")
+        if value is None:
+            cleaned["aws_subnets"] = None
+        else:
             if isinstance(value, str):
                 try:
                     value = json.loads(value)
                 except json.JSONDecodeError:
-                    self.add_error(list_field, "Expected a JSON array of subnet identifiers.")
+                    self.add_error("aws_subnets", "Expected a JSON array of subnet IDs.")
+                    return cleaned
+            if value and not isinstance(value, list):
+                self.add_error("aws_subnets", "Provide a JSON array of subnet IDs.")
+                return cleaned
+            cleaned["aws_subnets"] = value
+        return cleaned
+
+
+class EcsTerraformForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region")
+    cluster_name = forms.CharField(label="ECS Cluster Name")
+
+    gcp_project = forms.CharField(label="GCP Project ID")
+    gcp_location = forms.CharField(label="GCP Location")
+    gke_cluster_name = forms.CharField(required=False, label="GKE Cluster Name")
+
+    machine_type = forms.CharField(required=False, label="Node Machine Type")
+    node_cpu = forms.FloatField(required=False, label="Node CPU (vCPU)")
+    node_memory = forms.IntegerField(required=False, label="Node Memory (MB)")
+    min_nodes = forms.IntegerField(required=False, label="Min Nodes")
+    max_nodes = forms.IntegerField(required=False, label="Max Nodes")
+    node_locations = forms.CharField(required=False, label="Node Locations", help_text="Comma-separated list of GCP zones.")
+
+    network = forms.CharField(required=False, label="GCP Network")
+    subnetwork = forms.CharField(required=False, label="GCP Subnetwork")
+    service_account = forms.CharField(required=False, label="Node Service Account")
+    release_channel = forms.CharField(required=False, label="GKE Release Channel")
+
+    private_nodes = forms.BooleanField(required=False, initial=True, label="Use Private Nodes")
+    private_endpoint = forms.BooleanField(required=False, label="Enable Private Control-Plane Endpoint")
+    master_ipv4_cidr = forms.CharField(required=False, label="Master IPv4 /28 CIDR")
+
+    node_pool_name = forms.CharField(required=False, label="Node Pool Name")
+    node_pool_subnet = forms.CharField(required=False, label="Node Pool Subnetwork")
+    node_pool_zones = forms.CharField(required=False, label="Node Pool Zones", help_text="Comma-separated zones for this pool.")
+    node_pools = forms.JSONField(required=False, label="Node Pools JSON Override")
+
+    services = forms.JSONField(required=False, label="Selected ECS Services")
+    skip_terraform_validate = forms.BooleanField(required=False, initial=True, label="Skip terraform validate")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "ecs_terraform"
+
+    def clean(self):
+        cleaned = super().clean()
+        required_fields = ["access_key", "secret_key", "aws_region", "cluster_name", "gcp_project", "gcp_location"]
+        for field in required_fields:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+
+        for list_field in ("services", "node_pools"):
+            value = cleaned.get(list_field)
+            if value in (None, ""):
+                cleaned[list_field] = None if list_field == "node_pools" else []
+                continue
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    self.add_error(list_field, "Expected a JSON array.")
                     continue
             if value and not isinstance(value, list):
-                self.add_error(list_field, "Provide a JSON array of subnet identifiers.")
+                self.add_error(list_field, "Provide a JSON array.")
                 continue
             cleaned[list_field] = value
+
+        return cleaned
+
+
+class EcsManifestForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region")
+    cluster_name = forms.CharField(label="ECS Cluster Name")
+
+    namespace = forms.CharField(required=False, label="Kubernetes Namespace")
+    services = forms.JSONField(required=False, label="Selected ECS Services")
+
+    aws_credentials_mode = forms.ChoiceField(
+        choices=(("auto", "Auto"), ("yes", "Always inject placeholders"), ("no", "Skip AWS placeholders")),
+        initial="auto",
+        label="Inject AWS Credential Secrets",
+    )
+    gemini_model = forms.CharField(required=False, label="Gemini Model")
+    gemini_fallbacks = forms.CharField(required=False, label="Gemini Fallbacks", help_text="Comma-separated list.")
+    gemini_api_key = forms.CharField(required=False, widget=forms.PasswordInput, label="Gemini API Key Override")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "ecs_manifests"
+
+    def clean(self):
+        cleaned = super().clean()
+        required_fields = ["access_key", "secret_key", "aws_region", "cluster_name"]
+        for field in required_fields:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+
+        value = cleaned.get("services")
+        if value in (None, ""):
+            cleaned["services"] = []
+        elif isinstance(value, str):
+            try:
+                cleaned["services"] = json.loads(value)
+            except json.JSONDecodeError:
+                self.add_error("services", "Expected a JSON array.")
+        elif not isinstance(value, list):
+            self.add_error("services", "Provide a JSON array.")
+
         return cleaned

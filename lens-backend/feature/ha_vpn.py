@@ -451,13 +451,7 @@ def generate_ha_vpn_artifacts(
         raise HaVpnPlanError("AWS access key and secret key are required.")
     configure_boto3_session(access_key=access_key, secret_key=secret_key, session_token=None, profile_name=None)
     aws_vpc = discover_aws_vpc(aws_vpc_id, aws_region)
-    if aws_subnet_ids:
-        aws_vpc.subnets = [subnet for subnet in aws_vpc.subnets if subnet.id in set(aws_subnet_ids)] or aws_vpc.subnets
     gcp_network = get_gcp_network(gcp_service_key, gcp_project, gcp_network_name)
-    if gcp_subnet_names:
-        gcp_network["subnetworks"] = [
-            subnet for subnet in gcp_network["subnetworks"] if subnet["name"] in set(gcp_subnet_names)
-        ] or gcp_network["subnetworks"]
     context = _plan_build_context(
         aws_vpc,
         gcp_network,
@@ -1301,7 +1295,6 @@ def enable_route_propagation(ec2, vpc_id: str, vgw_id: str):
 
 def determine_route_tables(route_tables, subnet_ids=None):
     """Map subnets to route tables, returning unique route table IDs."""
-    subnet_ids = subnet_ids or []
     subnet_to_rt = {}
     main_rt = None
     for rt in route_tables:
@@ -1312,8 +1305,10 @@ def determine_route_tables(route_tables, subnet_ids=None):
             subnet_id = assoc.get('SubnetId')
             if subnet_id:
                 subnet_to_rt[subnet_id] = rt_id
-    if not subnet_ids:
+    if subnet_ids is None:
         return sorted({rt['RouteTableId'] for rt in route_tables})
+    if len(subnet_ids) == 0:
+        return []
     targets = []
     for subnet_id in subnet_ids:
         rt_id = subnet_to_rt.get(subnet_id)
@@ -1325,26 +1320,43 @@ def determine_route_tables(route_tables, subnet_ids=None):
 
 
 def enable_route_propagation_for_subnets(ec2, vpc_id: str, vgw_id: str, subnet_ids: Optional[List[str]] = None):
-    """Enable route propagation on route tables associated with selected subnets (or all if none provided)."""
+    """Ensure VGW propagation is enabled only on route tables tied to the provided subnets."""
     resp = ec2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])
     route_tables = resp.get('RouteTables', [])
     if not route_tables:
         logger.warning("No route tables found for VPC; cannot enable propagation.")
         return []
-    target_rt_ids = determine_route_tables(route_tables, subnet_ids)
-    enabled = []
-    for rt_id in target_rt_ids:
-        try:
-            ec2.enable_vgw_route_propagation(RouteTableId=rt_id, GatewayId=vgw_id)
-            enabled.append(rt_id)
-            logger.info(f"Enabled route propagation on {rt_id}")
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'RouteAlreadyExists':
-                logger.info(f"Propagation already enabled on {rt_id}")
-                enabled.append(rt_id)
-            else:
-                logger.warning(f"Failed to enable propagation on {rt_id}: {e}")
-    return enabled
+    target_rt_ids = set(determine_route_tables(route_tables, subnet_ids))
+    if subnet_ids == []:
+        logger.info("No subnets selected; disabling VGW route propagation on all associated route tables.")
+    elif not target_rt_ids and subnet_ids:
+        logger.info("Requested subnets do not map to any route tables; skipping VGW propagation.")
+
+    for rt in route_tables:
+        rt_id = rt['RouteTableId']
+        propagating = rt.get('PropagatingVgws', [])
+        has_propagation = any(p.get('GatewayId') == vgw_id for p in propagating)
+        if rt_id in target_rt_ids:
+            if has_propagation:
+                logger.info(f"Route propagation already enabled on {rt_id}")
+                continue
+            try:
+                ec2.enable_vgw_route_propagation(RouteTableId=rt_id, GatewayId=vgw_id)
+                logger.info(f"Enabled route propagation on route table {rt_id}")
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'RouteAlreadyExists':
+                    logger.info(f"Propagation already enabled on {rt_id}")
+                else:
+                    logger.warning(f"Failed to enable route propagation on {rt_id}: {e}")
+        else:
+            if not has_propagation:
+                continue
+            try:
+                ec2.disable_vgw_route_propagation(RouteTableId=rt_id, GatewayId=vgw_id)
+                logger.info(f"Disabled route propagation on route table {rt_id}")
+            except ClientError as e:
+                logger.warning(f"Failed to disable route propagation on {rt_id}: {e}")
+    return sorted(target_rt_ids)
 
 
 def check_tunnel_status(compute, config: HAVPNConfig, tunnel_names: List[str]):
@@ -1522,11 +1534,11 @@ def prompt_select_subnets_for_propagation(ec2, vpc_id: str) -> Optional[List[str
             label += f" - {name}"
         print(f"  {num}. {label}")
     print("  a. All subnets")
-    print("  <enter> Skip selection (do not enable propagation)")
+    print("  <enter> Use all route tables")
 
     choice = input("Enter comma-separated numbers (or 'a' for all): ").strip()
     if not choice:
-        return []
+        return None
     if choice.lower() == 'a':
         return None
 
@@ -1634,14 +1646,9 @@ def interactive_setup(args):
         print(f"AWS VPC selected: {args.aws_vpc_id}")
     # Ask which subnets to target for route propagation
     selected_subnets = prompt_select_subnets_for_propagation(ec2, args.aws_vpc_id)
-    if selected_subnets is None:
-        # All subnets
+    if not selected_subnets:
         args.propagate_subnets = None
         logger.info("Will enable VGW propagation on all route tables.")
-    elif len(selected_subnets) == 0:
-        # None selected
-        args.propagate_subnets = "none"
-        logger.info("No subnets selected; route propagation will be skipped.")
     else:
         args.propagate_subnets = ",".join(selected_subnets)
         logger.info(f"Will enable VGW propagation on selected subnet route tables: {args.propagate_subnets}")

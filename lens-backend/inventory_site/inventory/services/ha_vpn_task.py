@@ -48,17 +48,21 @@ def run_ha_vpn_task(clean_data: dict) -> TaskExecutionResult:
 
     aws_region = clean_data["aws_region"]
     aws_vpc_id = clean_data["aws_vpc_id"]
-    selected_aws_subnets = clean_data.get("aws_subnets") or []
-
-    # Discover AWS subnets to understand whether "all" are selected.
     aws_vpc = ha_vpn.discover_aws_vpc(aws_vpc_id, aws_region)
     all_subnet_ids = [subnet.id for subnet in aws_vpc.subnets]
-    if selected_aws_subnets and set(selected_aws_subnets) == set(all_subnet_ids):
-        propagate_targets = None  # treat as "all route tables"
-    elif selected_aws_subnets:
-        propagate_targets = selected_aws_subnets
+
+    raw_subnet_selection = clean_data.get("aws_subnets")
+    if raw_subnet_selection is None:
+        propagate_targets = None
     else:
-        propagate_targets = []  # skip propagation
+        valid_ids = set(all_subnet_ids)
+        selected_aws_subnets = [sid for sid in raw_subnet_selection if sid in valid_ids]
+        if not selected_aws_subnets:
+            propagate_targets = []
+        elif set(selected_aws_subnets) == valid_ids:
+            propagate_targets = None
+        else:
+            propagate_targets = selected_aws_subnets
 
     prefix = clean_data.get("name_prefix") or f"ha-{aws_vpc_id}"
     prefix = ha_vpn.sanitize_name(prefix) or f"ha-{aws_vpc_id}"
@@ -73,20 +77,6 @@ def run_ha_vpn_task(clean_data: dict) -> TaskExecutionResult:
     config.gcp_asn = clean_data.get("gcp_asn") or 64512
 
     service_key = clean_data["gcp_service_key"]
-    gcp_network = ha_vpn.get_gcp_network(service_key, config.gcp_project, config.gcp_network)
-    selected_gcp_names = clean_data.get("gcp_subnets") or [s["name"] for s in gcp_network.get("subnetworks", [])]
-    if selected_gcp_names:
-        ranges = []
-        for subnet in gcp_network.get("subnetworks", []):
-            if subnet.get("name") not in set(selected_gcp_names):
-                continue
-            cidr = subnet.get("cidr") or subnet.get("ip_cidr_range") or subnet.get("ipCidrRange")
-            if cidr:
-                ranges.append(cidr)
-        if ranges:
-            config.tunnel_advertise_mode = "CUSTOM"
-            config.custom_advertised_ranges = ranges
-
     logger = ha_vpn.logger
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.INFO)
@@ -99,22 +89,19 @@ def run_ha_vpn_task(clean_data: dict) -> TaskExecutionResult:
     try:
         metadata = ha_vpn.setup_ha_vpn(config, prefix, service_key=service_key)
 
-        if propagate_targets == []:
-            logger.info("No AWS subnets selected; skipping VGW route propagation.")
+        logger.info("Enabling route propagation on AWS route tables...")
+        ec2 = boto3.client("ec2", region_name=config.aws_region)
+        vgw_id = metadata["resources"]["aws_vgw_id"]
+        if propagate_targets is None:
+            ha_vpn.enable_route_propagation(ec2, config.aws_vpc_id, vgw_id)
         else:
-            logger.info("Enabling route propagation on AWS route tables...")
-            ec2 = boto3.client("ec2", region_name=config.aws_region)
-            vgw_id = metadata["resources"]["aws_vgw_id"]
-            if propagate_targets is None:
-                ha_vpn.enable_route_propagation(ec2, config.aws_vpc_id, vgw_id)
-            else:
-                logger.info(
-                    "Targeting route tables for subnets: %s",
-                    ", ".join(propagate_targets),
-                )
-                ha_vpn.enable_route_propagation_for_subnets(
-                    ec2, config.aws_vpc_id, vgw_id, propagate_targets
-                )
+            logger.info(
+                "Targeting route tables for subnets: %s",
+                ", ".join(propagate_targets),
+            )
+            ha_vpn.enable_route_propagation_for_subnets(
+                ec2, config.aws_vpc_id, vgw_id, propagate_targets
+            )
 
         logger.info("Waiting 30 seconds before checking tunnel status...")
         time.sleep(30)
@@ -137,8 +124,6 @@ def run_ha_vpn_task(clean_data: dict) -> TaskExecutionResult:
             aws_asn=config.aws_asn,
             gcp_asn=config.gcp_asn,
             name_prefix=prefix,
-            aws_subnet_ids=selected_aws_subnets or None,
-            gcp_subnet_names=clean_data.get("gcp_subnets"),
         )
         for artifact in plan_artifacts:
             if artifact["filename"] == "ha_vpn_context.json":

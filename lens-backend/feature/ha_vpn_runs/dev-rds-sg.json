@@ -1,0 +1,95 @@
+{
+  "aws_tunnels": [
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.121.246",
+      "outside_ip": "54.179.232.170",
+      "psk": "Y.FjRHZ7MKJgBQNml1Xh5G.QPnY08NKj",
+      "vpn_inside_ip": "169.254.121.245"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.125.82",
+      "outside_ip": "54.251.228.90",
+      "psk": "KI2sUMebtbheQQUfXFnfFcxn5cfOFsIu",
+      "vpn_inside_ip": "169.254.125.81"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.188.10",
+      "outside_ip": "13.251.223.20",
+      "psk": "V3.CZr6DTMqo0yV_1rTshoLtDJlZzDbp",
+      "vpn_inside_ip": "169.254.188.9"
+    },
+    {
+      "bgp_asn": 64522,
+      "customer_inside_ip": "169.254.66.10",
+      "outside_ip": "18.139.87.47",
+      "psk": "ec_zWlELIXpbf9LUz8So0IGPJyfAHjgt",
+      "vpn_inside_ip": "169.254.66.9"
+    }
+  ],
+  "config": {
+    "aws_asn": 64522,
+    "aws_region": "ap-southeast-1",
+    "aws_vpc_id": "vpc-9f6205fa",
+    "gcp_asn": 64533,
+    "gcp_network": "herkey-vpc-non-prod",
+    "gcp_project": "non-prod-480312",
+    "gcp_region": "asia-south1"
+  },
+  "prefix": "dev-rds-sg",
+  "resources": {
+    "aws_cgw_ids": [
+      "cgw-067cdeb45dd02ae36",
+      "cgw-091e27274419637c4"
+    ],
+    "aws_vgw_id": "vgw-07171cc9a8eb021ed",
+    "aws_vpn_ids": [
+      "vpn-03c0750cde54924d4",
+      "vpn-0e93edd143ab1eb0a"
+    ],
+    "gcp_ha_gateway": "dev-rds-sg-ha-gateway",
+    "gcp_interface_ips": [
+      "34.153.58.135",
+      "34.157.215.109"
+    ],
+    "gcp_peer_gateway": "dev-rds-sg-aws-peer-gateway",
+    "gcp_router": "dev-rds-sg-router",
+    "gcp_tunnels": [
+      {
+        "aws_interface": 0,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/non-prod-480312/regions/asia-south1/vpnTunnels/dev-rds-sg-tunnel-0",
+        "name": "dev-rds-sg-tunnel-0",
+        "peer_bgp_ip": "169.254.121.245",
+        "router_bgp_ip": "169.254.121.246"
+      },
+      {
+        "aws_interface": 1,
+        "gcp_interface": 0,
+        "link": "https://www.googleapis.com/compute/v1/projects/non-prod-480312/regions/asia-south1/vpnTunnels/dev-rds-sg-tunnel-1",
+        "name": "dev-rds-sg-tunnel-1",
+        "peer_bgp_ip": "169.254.125.81",
+        "router_bgp_ip": "169.254.125.82"
+      },
+      {
+        "aws_interface": 2,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/non-prod-480312/regions/asia-south1/vpnTunnels/dev-rds-sg-tunnel-2",
+        "name": "dev-rds-sg-tunnel-2",
+        "peer_bgp_ip": "169.254.188.9",
+        "router_bgp_ip": "169.254.188.10"
+      },
+      {
+        "aws_interface": 3,
+        "gcp_interface": 1,
+        "link": "https://www.googleapis.com/compute/v1/projects/non-prod-480312/regions/asia-south1/vpnTunnels/dev-rds-sg-tunnel-3",
+        "name": "dev-rds-sg-tunnel-3",
+        "peer_bgp_ip": "169.254.66.9",
+        "router_bgp_ip": "169.254.66.10"
+      }
+    ]
+  },
+  "timestamp": "2025-12-13T18:25:29.166676+00:00"
+}
