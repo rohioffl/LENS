@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/aws/ecs/clusters/", views.aws_ecs_clusters_api, name="aws_ecs_clusters_api"),
     path("api/aws/ecs/services/", views.aws_ecs_services_api, name="aws_ecs_services_api"),
     path("api/aws/eks/clusters/", views.aws_eks_clusters_api, name="aws_eks_clusters_api"),
+    path("api/aws/eks/namespaces/", views.aws_eks_namespaces_api, name="aws_eks_namespaces_api"),
     path("api/aws/ecr-repos/", views.aws_ecr_repos_api, name="aws_ecr_repos_api"),
     path("api/gcp/projects/", views.gcp_projects_api, name="gcp_projects_api"),
     path("api/gcp/networks/", views.gcp_networks_api, name="gcp_networks_api"),

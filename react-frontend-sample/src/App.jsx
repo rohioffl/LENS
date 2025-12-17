@@ -200,6 +200,19 @@ const GCP_REGIONS = Object.entries(GCP_REGION_LABELS).map(([id, label]) => ({
   label,
   display: formatRegionDisplay(id, label),
 }));
+const DEFAULT_EKS_RESOURCE_TYPES = [
+  'deployments.apps',
+  'statefulsets.apps',
+  'daemonsets.apps',
+  'jobs.batch',
+  'cronjobs.batch',
+  'services',
+  'ingresses.networking.k8s.io',
+  'configmaps',
+  'secrets',
+  'persistentvolumeclaims',
+  'horizontalpodautoscalers.autoscaling',
+];
 const INVENTORY_RESOURCE_IDS = [
   'cost',
   'rds',
@@ -407,6 +420,14 @@ const App = () => {
   const [eksTfLogs, setEksTfLogs] = useState('');
   const [eksTfError, setEksTfError] = useState('');
   const [eksTfArtifacts, setEksTfArtifacts] = useState([]);
+  const [eksNamespaces, setEksNamespaces] = useState([]);
+  const [eksNamespacesLoading, setEksNamespacesLoading] = useState(false);
+  const [eksNamespacesError, setEksNamespacesError] = useState('');
+  const [selectedEksNamespaces, setSelectedEksNamespaces] = useState([]);
+  const [selectedEksResourceTypes, setSelectedEksResourceTypes] = useState(DEFAULT_EKS_RESOURCE_TYPES.slice());
+  const [eksManifestLogs, setEksManifestLogs] = useState('');
+  const [eksManifestError, setEksManifestError] = useState('');
+  const [eksManifestArtifacts, setEksManifestArtifacts] = useState([]);
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
@@ -416,6 +437,7 @@ const App = () => {
   useArtifactCleanup(ecsTfArtifacts);
   useArtifactCleanup(ecsManifestArtifacts);
   useArtifactCleanup(eksTfArtifacts);
+  useArtifactCleanup(eksManifestArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
@@ -437,6 +459,7 @@ const App = () => {
     return filtered.length ? filtered : vpnGcpSubnets;
   }, [vpnGcpSubnets, vpnGcpRegion]);
   const vpnViews = ['ha_vpn', 'classic_vpn'];
+  const eksClusterViews = ['eks_terraform', 'eks_manifests'];
   const isVpnView = vpnViews.includes(view);
   const vpnLegendLabel = view === 'classic_vpn' ? 'Classic VPN' : 'HA VPN';
   const showAwsSubnetSelector = isVpnView && subnetRows.length > 0;
@@ -659,9 +682,9 @@ const App = () => {
   }, [authReady, awsAccess, awsSecret, resolvedRegion, view]);
 
   useEffect(() => {
-    if (!authReady || view !== 'eks_terraform') {
+    if (!authReady || !eksClusterViews.includes(view)) {
       setEksClusterLoading(false);
-      if (view !== 'eks_terraform') {
+      if (!eksClusterViews.includes(view)) {
         setEksClusters([]);
         setEksClusterError('');
       }
@@ -677,9 +700,12 @@ const App = () => {
         });
         const items = res.clusters || [];
         setEksClusters(items);
-        if (!eksClusterName && items.length) {
-          setEksClusterName(items[0]);
-        }
+        setEksClusterName((prev) => {
+          if (prev && items.includes(prev)) {
+            return prev;
+          }
+          return items[0] || '';
+        });
         setEksClusterError('');
       } catch (err) {
         setEksClusterError(err.message || String(err));
@@ -725,6 +751,39 @@ const App = () => {
     }, debounceDelay);
     return () => clearTimeout(timer);
   }, [authReady, awsAccess, awsSecret, resolvedRegion, ecsClusterName, view]);
+
+  useEffect(() => {
+    if (!authReady || view !== 'eks_manifests' || !eksClusterName) {
+      setEksNamespaces([]);
+      setSelectedEksNamespaces([]);
+      setEksNamespacesError('');
+      setEksNamespacesLoading(false);
+      return;
+    }
+    setEksNamespacesLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/aws/eks/namespaces/', {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+          region: resolvedRegion,
+          cluster: eksClusterName,
+        });
+        const items = res.namespaces || [];
+        const unique = Array.from(new Set(items)).sort();
+        setEksNamespaces(unique);
+        setSelectedEksNamespaces(unique);
+        setEksNamespacesError('');
+      } catch (err) {
+        setEksNamespacesError(err.message || String(err));
+        setEksNamespaces([]);
+        setSelectedEksNamespaces([]);
+      } finally {
+        setEksNamespacesLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [authReady, awsAccess, awsSecret, resolvedRegion, eksClusterName, view]);
 
   useEffect(() => {
     if (!isVpnView) {
@@ -937,6 +996,20 @@ const App = () => {
   const clearTerraformServices = () => setEcsTerraformServices([]);
   const selectAllManifestServices = () => setEcsManifestServices(ecsServices);
   const clearManifestServices = () => setEcsManifestServices([]);
+  const toggleEksNamespace = (namespace) => {
+    setSelectedEksNamespaces((prev) =>
+      prev.includes(namespace) ? prev.filter((item) => item !== namespace) : [...prev, namespace]
+    );
+  };
+  const selectAllEksNamespaces = () => setSelectedEksNamespaces(eksNamespaces.slice());
+  const clearEksNamespaces = () => setSelectedEksNamespaces([]);
+  const toggleEksResourceType = (resource) => {
+    setSelectedEksResourceTypes((prev) =>
+      prev.includes(resource) ? prev.filter((item) => item !== resource) : [...prev, resource]
+    );
+  };
+  const selectAllEksResourceTypes = () => setSelectedEksResourceTypes(DEFAULT_EKS_RESOURCE_TYPES.slice());
+  const clearEksResourceTypes = () => setSelectedEksResourceTypes([]);
 
   const runTerraformTask = async () => {
     setTfError('');
@@ -1083,6 +1156,38 @@ const App = () => {
       setEcsManifestArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setEcsManifestError(err.message || String(err));
+    }
+  };
+
+  const runEksManifestTask = async () => {
+    setEksManifestError('');
+    setEksManifestLogs('Exporting EKS namespaces...\n');
+    setEksManifestArtifacts([]);
+    if (!authReady || !eksClusterName || !selectedEksNamespaces.length) {
+      setEksManifestError('AWS creds, EKS cluster, and at least one namespace are required.');
+      return;
+    }
+    if (!selectedEksResourceTypes.length) {
+      setEksManifestError('Select at least one resource type.');
+      return;
+    }
+    try {
+      const payload = {
+        access_key: awsAccess.trim(),
+        secret_key: awsSecret.trim(),
+        aws_region: resolvedRegion,
+        cluster_name: eksClusterName,
+        namespaces: selectedEksNamespaces,
+        resource_types: selectedEksResourceTypes.join(','),
+      };
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'eks_manifests', data: payload },
+        (message) => setEksManifestLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setEksManifestArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setEksManifestError(err.message || String(err));
     }
   };
 
@@ -1510,6 +1615,11 @@ const App = () => {
           <p>Convert ECS task definitions into curated Kubernetes manifests using Gemini.</p>
           <button onClick={() => setView('ecs_manifests')}>Generate Manifests</button>
         </div>
+        <div className="task-card">
+          <h2>EKS → GKE Manifests</h2>
+          <p>Export live EKS workloads and clean them for GKE without Gemini.</p>
+          <button onClick={() => setView('eks_manifests')}>Export Manifests</button>
+        </div>
         </div>
       )}
 
@@ -1519,7 +1629,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests'].includes(view)) && (
+      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests', 'eks_manifests'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -1530,7 +1640,7 @@ const App = () => {
           AWS Secret Access Key
           <input type="password" value={awsSecret} onChange={(e) => setAwsSecret(e.target.value)} placeholder="••••" />
         </label>
-        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests'].includes(view) && (
+        {['terraform', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests', 'eks_manifests'].includes(view) && (
           <>
             <label>
               AWS Region
@@ -1891,10 +2001,6 @@ const App = () => {
             {eksClusterLoading && <small>Loading EKS clusters...</small>}
             {eksClusterError && <div className="error">{eksClusterError}</div>}
             <label>
-              Cluster Name (manual override)
-              <input value={eksClusterName} onChange={(e) => setEksClusterName(e.target.value)} placeholder="my-eks-cluster" />
-            </label>
-            <label>
               GCP Project ID
               <input value={eksTfGcpProject} onChange={(e) => setEksTfGcpProject(e.target.value)} placeholder="my-gcp-project" />
             </label>
@@ -2073,6 +2179,108 @@ const App = () => {
         <h3>Artifacts</h3>
         <div className="artifacts">
           {ecsManifestArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
+      {view === 'eks_manifests' && (
+      <>
+      <fieldset>
+        <legend>EKS Cluster & Namespaces</legend>
+        <label>
+          EKS Cluster
+          <select
+            value={eksClusterSelectValue}
+            onChange={(e) => setEksClusterName(e.target.value)}
+            disabled={!eksClusters.length}
+          >
+            <option value="">-- Select cluster --</option>
+            {eksClusters.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {eksClusterLoading && <small>Loading EKS clusters...</small>}
+        {eksClusterError && <div className="error">{eksClusterError}</div>}
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Namespaces to export</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllEksNamespaces} disabled={!eksNamespaces.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearEksNamespaces} disabled={!selectedEksNamespaces.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {eksNamespacesLoading && <small>Loading namespaces...</small>}
+          {eksNamespacesError && <div className="error">{eksNamespacesError}</div>}
+          {!eksNamespacesLoading && !eksNamespaces.length && (
+            <small>No namespaces detected. System namespaces are excluded automatically.</small>
+          )}
+          <div className="checkbox-grid">
+            {eksNamespaces.map((namespace) => (
+              <label key={namespace} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={selectedEksNamespaces.includes(namespace)}
+                  onChange={() => toggleEksNamespace(namespace)}
+                />
+                <span>{namespace}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Resource Types</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllEksResourceTypes} disabled={!DEFAULT_EKS_RESOURCE_TYPES.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearEksResourceTypes} disabled={!selectedEksResourceTypes.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          <small>Defaults mirror the helper script; deselect any workloads you do not want exported.</small>
+          <div className="checkbox-grid">
+            {DEFAULT_EKS_RESOURCE_TYPES.map((resource) => (
+              <label key={resource} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={selectedEksResourceTypes.includes(resource)}
+                  onChange={() => toggleEksResourceType(resource)}
+                />
+                <span>{resource}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Manifest Export</legend>
+        <div className="info-callout">
+          Runs the local <code>eks2gke-manifest-local.py</code> helper. Ensure AWS CLI and kubectl are available on the backend host.
+          System namespaces are filtered automatically.
+        </div>
+        <button onClick={runEksManifestTask} disabled={!authReady || !eksClusterName || !selectedEksNamespaces.length}>
+          Export EKS Manifests
+        </button>
+        {eksManifestError && <div className="error">{eksManifestError}</div>}
+        <h3>Logs</h3>
+        <pre>{eksManifestLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {eksManifestArtifacts.map((artifact) => (
             <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
               Download {artifact.filename}
             </a>

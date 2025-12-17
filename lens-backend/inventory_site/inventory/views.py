@@ -1,9 +1,14 @@
 import base64
+import os
 import json
+import subprocess
 import queue
+import sys
 import threading
+import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO, TextIOBase
+from pathlib import Path
 from zipfile import ZipFile
 
 import boto3
@@ -19,6 +24,17 @@ from inventory.services.task_registry import (
     automation_registry,
 )
 from ecr2artifact import list_ecr_repositories, list_ecr_images, configure_boto3_session
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+EKS_MANIFEST_SCRIPT = BACKEND_ROOT / "feature" / "eks2gke-manifest-local.py"
+ACCESS_DENIED_MARKERS = (
+    "accessdenied",
+    "unauthorized",
+    "forbidden",
+    "provide credentials",
+    "cluster access request is unauthorized",
+    "requested credentials",
+)
 
 
 def inventory_request_view(request):
@@ -239,6 +255,31 @@ def _aws_creds_from_payload(payload):
         "secret_key": payload.get("secret_key"),
         "session_token": payload.get("session_token"),
     }
+
+
+def _maybe_append_eks_access_hint(message: str, cluster: str, region: str) -> str:
+    text = message or ""
+    lowered = text.lower()
+    if any(marker in lowered for marker in ACCESS_DENIED_MARKERS):
+        hint = (
+            "\nIt looks like this IAM principal does not have access to the EKS cluster. "
+            "Grant yourself access via the AWS CLI:\n\n"
+            "Step 1: Add yourself as an EKS access entry\n"
+            f"aws eks create-access-entry \\\n"
+            f"  --cluster-name {cluster} \\\n"
+            "  --principal-arn <YOUR_IAM_PRINCIPAL_ARN> \\\n"
+            "  --type STANDARD \\\n"
+            f"  --region {region}\n\n"
+            "Step 2: Attach the admin policy\n"
+            f"aws eks associate-access-policy \\\n"
+            f"  --cluster-name {cluster} \\\n"
+            "  --principal-arn <YOUR_IAM_PRINCIPAL_ARN> \\\n"
+            "  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \\\n"
+            "  --access-scope type=cluster \\\n"
+            f"  --region {region}\n"
+        )
+        return f"{text}{hint}"
+    return text
 
 
 @csrf_exempt
@@ -536,3 +577,82 @@ def aws_eks_clusters_api(request):
         return JsonResponse({"error": f"Failed to list EKS clusters: {exc}"}, status=500)
 
     return JsonResponse({"clusters": sorted(set(clusters))})
+
+
+@csrf_exempt
+def aws_eks_namespaces_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    if not EKS_MANIFEST_SCRIPT.exists():
+        return JsonResponse({"error": "eks2gke-manifest-local.py is not available on the server."}, status=500)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    cluster = payload.get("cluster")
+    if not region or not cluster:
+        return JsonResponse({"error": "Fields 'region' and 'cluster' are required."}, status=400)
+
+    env = os.environ.copy()
+    env.setdefault("AWS_PAGER", "")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env["AWS_REGION"] = region
+    env["AWS_DEFAULT_REGION"] = region
+    if payload.get("access_key"):
+        env["AWS_ACCESS_KEY_ID"] = payload["access_key"]
+    if payload.get("secret_key"):
+        env["AWS_SECRET_ACCESS_KEY"] = payload["secret_key"]
+    if payload.get("session_token"):
+        env["AWS_SESSION_TOKEN"] = payload["session_token"]
+
+    with tempfile.TemporaryDirectory(prefix="eks_ns_") as tempdir:
+        cmd = [
+            sys.executable,
+            str(EKS_MANIFEST_SCRIPT),
+            "--cluster",
+            cluster,
+            "--region",
+            region,
+            "--outdir",
+            tempdir,
+            "--list-namespaces",
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(EKS_MANIFEST_SCRIPT.parent),
+            env=env,
+        )
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or "Unknown error."
+        detail = _maybe_append_eks_access_hint(detail, cluster, region)
+        return JsonResponse({"error": f"Failed to list namespaces: {detail}"}, status=500)
+
+    namespaces: list[str] = []
+    parsed_payload = False
+    stdout = (proc.stdout or "").strip()
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        namespace_list = payload.get("namespaces")
+        if isinstance(namespace_list, list):
+            namespaces = [str(entry).strip() for entry in namespace_list if str(entry).strip()]
+            parsed_payload = True
+            break
+
+    if not parsed_payload:
+        detail = stdout.strip() or "Could not parse namespace output."
+        detail = _maybe_append_eks_access_hint(detail, cluster, region)
+        return JsonResponse({"error": detail}, status=500)
+
+    return JsonResponse({"namespaces": sorted(set(namespaces))})

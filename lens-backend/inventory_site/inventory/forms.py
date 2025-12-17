@@ -468,3 +468,47 @@ class EcsManifestForm(AutomationTaskForm):
             cleaned["gemini_api_key"] = defaults["gemini_api_key"]
 
         return cleaned
+
+
+class EksManifestForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(label="AWS Region")
+    cluster_name = forms.CharField(label="EKS Cluster Name")
+    namespaces = forms.JSONField(required=False, label="Namespaces", help_text="Optional JSON array of namespaces to export.")
+    resource_types = forms.CharField(
+        required=False,
+        label="Resource types",
+        help_text="Comma-separated kubectl resource types. Leave blank to auto-discover.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "eks_manifests"
+
+    def clean(self):
+        cleaned = super().clean()
+        required_fields = ["access_key", "secret_key", "aws_region", "cluster_name"]
+        for field in required_fields:
+            if not cleaned.get(field):
+                self.add_error(field, "This field is required.")
+
+        namespaces = cleaned.get("namespaces")
+        if namespaces in (None, ""):
+            cleaned["namespaces"] = []
+        elif isinstance(namespaces, str):
+            try:
+                decoded = json.loads(namespaces)
+            except json.JSONDecodeError:
+                self.add_error("namespaces", "Expected a JSON array.")
+            else:
+                if isinstance(decoded, list):
+                    cleaned["namespaces"] = [str(entry).strip() for entry in decoded if str(entry).strip()]
+                else:
+                    self.add_error("namespaces", "Provide a JSON array.")
+        elif isinstance(namespaces, list):
+            cleaned["namespaces"] = [str(entry).strip() for entry in namespaces if str(entry).strip()]
+        else:
+            self.add_error("namespaces", "Provide a JSON array.")
+
+        return cleaned
