@@ -12,6 +12,9 @@ from pathlib import Path
 # --------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+print("🔥 SETTINGS FILE LOADED 🔥")
+print("ALLOWED_HOSTS =", ALLOWED_HOSTS)
+
 # --------------------------------------------------
 # SECURITY
 # --------------------------------------------------
