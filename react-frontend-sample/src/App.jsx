@@ -428,6 +428,19 @@ const App = () => {
   const [eksManifestLogs, setEksManifestLogs] = useState('');
   const [eksManifestError, setEksManifestError] = useState('');
   const [eksManifestArtifacts, setEksManifestArtifacts] = useState([]);
+  const [boxCloud, setBoxCloud] = useState('aws');
+  const [boxAwsRegion, setBoxAwsRegion] = useState('ap-south-1');
+  const [boxGcpProject, setBoxGcpProject] = useState('');
+  const [boxGcpRegion, setBoxGcpRegion] = useState('us-central1');
+  const [boxServiceOptions, setBoxServiceOptions] = useState([]);
+  const [boxServiceSchemas, setBoxServiceSchemas] = useState({});
+  const [boxSelectedServices, setBoxSelectedServices] = useState([]);
+  const [boxServiceInputs, setBoxServiceInputs] = useState({});
+  const [boxMetadataLoading, setBoxMetadataLoading] = useState(false);
+  const [boxMetadataError, setBoxMetadataError] = useState('');
+  const [boxArtifacts, setBoxArtifacts] = useState([]);
+  const [boxLogs, setBoxLogs] = useState('');
+  const [boxError, setBoxError] = useState('');
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
@@ -438,6 +451,7 @@ const App = () => {
   useArtifactCleanup(ecsManifestArtifacts);
   useArtifactCleanup(eksTfArtifacts);
   useArtifactCleanup(eksManifestArtifacts);
+  useArtifactCleanup(boxArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
@@ -738,7 +752,7 @@ const App = () => {
         const items = res.services || [];
         setEcsServices(items);
         setEcsServicesError('');
-        setEcsTerraformServices((prev) => (prev.length ? prev.filter((svc) => items.includes(svc)) : items));
+        setEcsTerraformServices(items);
         setEcsManifestServices((prev) => (prev.length ? prev.filter((svc) => items.includes(svc)) : items));
       } catch (err) {
         setEcsServicesError(err.message || String(err));
@@ -784,6 +798,56 @@ const App = () => {
     }, debounceDelay);
     return () => clearTimeout(timer);
   }, [authReady, awsAccess, awsSecret, resolvedRegion, eksClusterName, view]);
+
+  useEffect(() => {
+    if (view !== 'box_project') {
+      setBoxServiceOptions([]);
+      setBoxServiceSchemas({});
+      setBoxSelectedServices([]);
+      setBoxServiceInputs({});
+      setBoxMetadataError('');
+      setBoxMetadataLoading(false);
+      return;
+    }
+    setBoxMetadataLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/box/metadata/', {
+          cloud_provider: boxCloud,
+        });
+        const options = res.services || [];
+        const schemas = res.inputs || {};
+        setBoxServiceOptions(options);
+        setBoxServiceSchemas(schemas);
+        setBoxMetadataError('');
+        setBoxSelectedServices((prev) => {
+          const filtered = prev.filter((svc) => options.some((opt) => opt.id === svc));
+          if (filtered.length) {
+            ensureBoxServiceDefaults(filtered, schemas);
+          }
+          setBoxServiceInputs((prevInputs) => {
+            const nextInputs = {};
+            filtered.forEach((svc) => {
+              if (prevInputs[svc]) {
+                nextInputs[svc] = prevInputs[svc];
+              }
+            });
+            return nextInputs;
+          });
+          return filtered;
+        });
+      } catch (err) {
+        setBoxMetadataError(err.message || String(err));
+        setBoxServiceOptions([]);
+        setBoxServiceSchemas({});
+        setBoxSelectedServices([]);
+        setBoxServiceInputs({});
+      } finally {
+        setBoxMetadataLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, boxCloud]);
 
   useEffect(() => {
     if (!isVpnView) {
@@ -980,20 +1044,12 @@ const App = () => {
     ));
   };
 
-  const toggleTerraformService = (service) => {
-    setEcsTerraformServices((prev) =>
-      prev.includes(service) ? prev.filter((item) => item !== service) : [...prev, service]
-    );
-  };
-
   const toggleManifestService = (service) => {
     setEcsManifestServices((prev) =>
       prev.includes(service) ? prev.filter((item) => item !== service) : [...prev, service]
     );
   };
 
-  const selectAllTerraformServices = () => setEcsTerraformServices(ecsServices);
-  const clearTerraformServices = () => setEcsTerraformServices([]);
   const selectAllManifestServices = () => setEcsManifestServices(ecsServices);
   const clearManifestServices = () => setEcsManifestServices([]);
   const toggleEksNamespace = (namespace) => {
@@ -1010,6 +1066,50 @@ const App = () => {
   };
   const selectAllEksResourceTypes = () => setSelectedEksResourceTypes(DEFAULT_EKS_RESOURCE_TYPES.slice());
   const clearEksResourceTypes = () => setSelectedEksResourceTypes([]);
+  const getBoxServiceLabel = (service) =>
+    boxServiceOptions.find((option) => option.id === service)?.label || service;
+  const ensureBoxServiceDefaults = (serviceIds, schemaOverride) => {
+    const schemaSource = schemaOverride || boxServiceSchemas;
+    setBoxServiceInputs((prev) => {
+      const next = { ...prev };
+      serviceIds.forEach((svc) => {
+        if (!next[svc]) {
+          const schema = schemaSource?.[svc] || [];
+          const defaults = {};
+          schema.forEach((field) => {
+            defaults[field.name] = field.default ?? '';
+          });
+          next[svc] = defaults;
+        }
+      });
+      return next;
+    });
+  };
+  const toggleBoxService = (service) => {
+    setBoxSelectedServices((prev) => {
+      const exists = prev.includes(service);
+      const updated = exists ? prev.filter((item) => item !== service) : [...prev, service];
+      if (!exists) {
+        ensureBoxServiceDefaults([service]);
+      }
+      return updated;
+    });
+  };
+  const selectAllBoxServices = () => {
+    const all = boxServiceOptions.map((option) => option.id);
+    setBoxSelectedServices(all);
+    ensureBoxServiceDefaults(all);
+  };
+  const clearBoxServices = () => setBoxSelectedServices([]);
+  const updateBoxServiceInput = (service, field, value) => {
+    setBoxServiceInputs((prev) => ({
+      ...prev,
+      [service]: {
+        ...(prev[service] || {}),
+        [field]: value,
+      },
+    }));
+  };
 
   const runTerraformTask = async () => {
     setTfError('');
@@ -1188,6 +1288,50 @@ const App = () => {
       setEksManifestArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setEksManifestError(err.message || String(err));
+    }
+  };
+
+  const runBoxProjectTask = async () => {
+    setBoxError('');
+    setBoxLogs('Preparing Terraform project...\n');
+    setBoxArtifacts([]);
+    if (!boxSelectedServices.length) {
+      setBoxError('Select at least one service.');
+      return;
+    }
+    if (boxCloud === 'aws' && !boxAwsRegion.trim()) {
+      setBoxError('AWS region is required.');
+      return;
+    }
+    if (boxCloud === 'gcp' && (!boxGcpProject.trim() || !boxGcpRegion.trim())) {
+      setBoxError('GCP project and region are required.');
+      return;
+    }
+    const payload = {
+      cloud_provider: boxCloud,
+      services: boxSelectedServices,
+      service_inputs: boxSelectedServices.reduce((acc, svc) => {
+        if (boxServiceInputs[svc]) {
+          acc[svc] = boxServiceInputs[svc];
+        }
+        return acc;
+      }, {}),
+    };
+    if (boxCloud === 'aws') {
+      payload.aws_region = boxAwsRegion.trim();
+    } else {
+      payload.gcp_project = boxGcpProject.trim();
+      payload.gcp_region = boxGcpRegion.trim();
+    }
+    try {
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'box_project', data: payload },
+        (message) => setBoxLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setBoxArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setBoxError(err.message || String(err));
     }
   };
 
@@ -1620,6 +1764,11 @@ const App = () => {
           <p>Export live EKS workloads and clean them for GKE without Gemini.</p>
           <button onClick={() => setView('eks_manifests')}>Export Manifests</button>
         </div>
+        <div className="task-card">
+          <h2>Box Terraform Generator</h2>
+          <p>Assemble Terraform modules for popular AWS or GCP services in minutes.</p>
+          <button onClick={() => setView('box_project')}>Build Project</button>
+        </div>
         </div>
       )}
 
@@ -1935,32 +2084,15 @@ const App = () => {
       <fieldset>
         <legend>ECS Services & Output</legend>
         <div className="aws-subnet-selector">
-          <div className="label-row">
-            <label>ECS Services</label>
-            <div className="pill-actions">
-              <button type="button" onClick={selectAllTerraformServices} disabled={!ecsServices.length}>
-                Select all
-              </button>
-              <button type="button" onClick={clearTerraformServices} disabled={!ecsTerraformServices.length}>
-                Clear
-              </button>
-            </div>
-          </div>
+          <label>ECS Services</label>
           {ecsServicesLoading && <small>Loading ECS services...</small>}
           {ecsServicesError && <div className="error">{ecsServicesError}</div>}
           {!ecsServices.length && !ecsServicesLoading && <small>No ECS services detected for this cluster.</small>}
-          <div className="checkbox-grid">
-            {ecsServices.map((service) => (
-              <label key={service} className="checkbox-item">
-                <input
-                  type="checkbox"
-                  checked={ecsTerraformServices.includes(service)}
-                  onChange={() => toggleTerraformService(service)}
-                />
-                <span>{service}</span>
-              </label>
-            ))}
-          </div>
+          {!!ecsServices.length && !ecsServicesLoading && (
+            <small>
+              All detected ECS services ({ecsServices.length}) will be included automatically when generating the Terraform bundle.
+            </small>
+          )}
         </div>
         <div className="info-callout">
           Generates Terraform bundles sized to your ECS footprint. AWS CLI and Terraform CLIs must be installed on the backend host.
@@ -2281,6 +2413,109 @@ const App = () => {
         <h3>Artifacts</h3>
         <div className="artifacts">
           {eksManifestArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
+      {view === 'box_project' && (
+      <>
+      <fieldset>
+        <legend>Cloud & Scope</legend>
+        <label>
+          Cloud Provider
+          <select value={boxCloud} onChange={(e) => setBoxCloud(e.target.value)}>
+            <option value="aws">AWS</option>
+            <option value="gcp">GCP</option>
+          </select>
+        </label>
+        {boxCloud === 'aws' ? (
+          <label>
+            AWS Region
+            <input value={boxAwsRegion} onChange={(e) => setBoxAwsRegion(e.target.value)} placeholder="ap-south-1" />
+          </label>
+        ) : (
+          <>
+            <label>
+              GCP Project ID
+              <input value={boxGcpProject} onChange={(e) => setBoxGcpProject(e.target.value)} placeholder="my-gcp-project" />
+            </label>
+            <label>
+              GCP Region
+              <input value={boxGcpRegion} onChange={(e) => setBoxGcpRegion(e.target.value)} placeholder="us-central1" />
+            </label>
+          </>
+        )}
+      </fieldset>
+      <fieldset>
+        <legend>Services</legend>
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Available Services</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllBoxServices} disabled={!boxServiceOptions.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearBoxServices} disabled={!boxSelectedServices.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {boxMetadataLoading && <small>Loading service metadata...</small>}
+          {boxMetadataError && <div className="error">{boxMetadataError}</div>}
+          <div className="checkbox-grid">
+            {boxServiceOptions.map((service) => (
+              <label key={service.id} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={boxSelectedServices.includes(service.id)}
+                  onChange={() => toggleBoxService(service.id)}
+                />
+                <span>{service.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </fieldset>
+      {!!boxSelectedServices.length && (
+        <fieldset>
+          <legend>Service Parameters</legend>
+          <div className="info-callout">
+            Provide overrides for each module variable. Leave a field blank to use the default value suggested by box-project.
+          </div>
+          {boxSelectedServices.map((service) => (
+            <div key={service} className="service-input-card">
+              <h4>{getBoxServiceLabel(service)}</h4>
+              {(boxServiceSchemas[service] || []).map((field) => (
+                <label key={field.name}>
+                  {field.prompt || field.name}
+                  <input
+                    value={(boxServiceInputs[service] || {})[field.name] ?? ''}
+                    onChange={(e) => updateBoxServiceInput(service, field.name, e.target.value)}
+                    placeholder={field.default ?? ''}
+                  />
+                </label>
+              ))}
+              {!boxServiceSchemas[service]?.length && <small>No additional inputs required.</small>}
+            </div>
+          ))}
+        </fieldset>
+      )}
+      <fieldset>
+        <legend>Generate Terraform</legend>
+        <button onClick={runBoxProjectTask} disabled={!boxSelectedServices.length}>
+          Build Terraform Project
+        </button>
+        {boxError && <div className="error">{boxError}</div>}
+        <h3>Logs</h3>
+        <pre>{boxLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {boxArtifacts.map((artifact) => (
             <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
               Download {artifact.filename}
             </a>

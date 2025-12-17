@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/aws/eks/clusters/", views.aws_eks_clusters_api, name="aws_eks_clusters_api"),
     path("api/aws/eks/namespaces/", views.aws_eks_namespaces_api, name="aws_eks_namespaces_api"),
     path("api/aws/ecr-repos/", views.aws_ecr_repos_api, name="aws_ecr_repos_api"),
+    path("api/box/metadata/", views.box_project_metadata_api, name="box_project_metadata_api"),
     path("api/gcp/projects/", views.gcp_projects_api, name="gcp_projects_api"),
     path("api/gcp/networks/", views.gcp_networks_api, name="gcp_networks_api"),
     path("api/gcp/network/", views.gcp_network_detail_api, name="gcp_network_detail_api"),

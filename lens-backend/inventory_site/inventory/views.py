@@ -16,7 +16,7 @@ from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
-from feature import gcp_vpn, terraform_vpc
+from feature import gcp_vpn, terraform_vpc, box_project
 
 from inventory.services.task_registry import (
     TaskExecutionError,
@@ -656,3 +656,23 @@ def aws_eks_namespaces_api(request):
         return JsonResponse({"error": detail}, status=500)
 
     return JsonResponse({"namespaces": sorted(set(namespaces))})
+
+
+@csrf_exempt
+def box_project_metadata_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+    cloud = (payload.get("cloud_provider") or "").lower()
+    if cloud not in box_project.TOP_SERVICES:
+        return JsonResponse({"error": "Unknown cloud provider."}, status=400)
+
+    services = [
+        {"id": svc, "label": label}
+        for svc, label in box_project.TOP_SERVICES.get(cloud, [])
+    ]
+    inputs = box_project.MODULE_INPUTS.get(cloud, {})
+    return JsonResponse({"services": services, "inputs": inputs})
