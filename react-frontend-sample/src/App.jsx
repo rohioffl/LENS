@@ -315,6 +315,10 @@ const App = () => {
   const [invArtifacts, setInvArtifacts] = useState([]);
   const [invLoading, setInvLoading] = useState(false);
   const [invStatus, setInvStatus] = useState('');
+  const [auditLogs, setAuditLogs] = useState('');
+  const [auditError, setAuditError] = useState('');
+  const [auditArtifacts, setAuditArtifacts] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const invProgressTimer = useRef(null);
   const gcpSubnetCacheRef = useRef(new Map());
   const gcpSubnetRequestRef = useRef(0);
@@ -444,6 +448,7 @@ const App = () => {
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
+  useArtifactCleanup(auditArtifacts);
   useArtifactCleanup(haArtifacts);
   useArtifactCleanup(classicArtifacts);
   useArtifactCleanup(ecrArtifacts);
@@ -455,6 +460,7 @@ const App = () => {
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
+  const auditReady = Boolean(awsAccess.trim() && awsSecret.trim());
   const ecsClusterSelectValue = ecsClusters.includes(ecsClusterName) ? ecsClusterName : '';
   const eksClusterSelectValue = eksClusters.includes(eksClusterName) ? eksClusterName : '';
 
@@ -1586,6 +1592,35 @@ const App = () => {
     }
   };
 
+  const runSecurityAudit = async () => {
+    setAuditError('');
+    setAuditLogs('');
+    setAuditArtifacts([]);
+    if (!awsAccess.trim() || !awsSecret.trim()) {
+      setAuditError('AWS access key and secret are required.');
+      return;
+    }
+    setAuditLoading(true);
+    try {
+      const res = await postJson('/api/tasks/run/', {
+        task_id: 'aws_security_audit',
+        data: {
+          access_key: awsAccess.trim(),
+          secret_key: awsSecret.trim(),
+        },
+      });
+      setAuditLogs((prev) => mergeBackendLogs(prev, res.logs));
+      setAuditArtifacts(createDownloadEntries(res.artifacts || []));
+    } catch (err) {
+      setAuditError(err.message || String(err));
+      if (err.logs) {
+        setAuditLogs((prev) => mergeBackendLogs(prev, err.logs));
+      }
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   const toggleInventoryRegion = (regionId) => {
     setInvRegions((prev) =>
       prev.includes(regionId) ? prev.filter((id) => id !== regionId) : [...prev, regionId]
@@ -1724,11 +1759,16 @@ const App = () => {
           <p>Convert AWS VPCs into GCP VPCs ready Terraform bundles with per-subnet overrides.</p>
           <button onClick={() => setView('terraform')}>Open Toolkit</button>
           </div>
-          <div className="task-card">
-            <h2>AWS Inventory Export</h2>
-            <p>Create XLSX-based resource inventories directly from your browser.</p>
-            <button onClick={() => setView('inventory')}>Run Inventory</button>
-          </div>
+        <div className="task-card">
+          <h2>AWS Inventory Export</h2>
+          <p>Create XLSX-based resource inventories directly from your browser.</p>
+          <button onClick={() => setView('inventory')}>Run Inventory</button>
+        </div>
+        <div className="task-card">
+          <h2>AWS Standard Security Audit</h2>
+          <p>Generate the standard security audit workbook with the same XLSX format and colors.</p>
+          <button onClick={() => setView('security_audit')}>Run Audit</button>
+        </div>
         <div className="task-card">
           <h2>HA VPN Builder</h2>
           <p>Design a redundant AWS &lt;-&gt; GCP HA VPN with dual tunnels and BGP routing.</p>
@@ -1778,7 +1818,7 @@ const App = () => {
         </div>
       )}
 
-      {(['terraform', 'inventory', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests', 'eks_manifests'].includes(view)) && (
+      {(['terraform', 'inventory', 'security_audit', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests', 'eks_manifests'].includes(view)) && (
       <fieldset>
         <legend>AWS Credentials & Region</legend>
         <label>
@@ -2859,6 +2899,29 @@ const App = () => {
         <h3>Artifacts</h3>
         <div className="artifacts">
           {ecrArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      )}
+
+      {view === 'security_audit' && (
+      <fieldset>
+        <legend>Standard Security Audit</legend>
+        <div className="info-callout">
+          Generates a multi-tab XLSX report with the same formatting and colors as the original sheet template.
+        </div>
+        <button onClick={runSecurityAudit} disabled={!auditReady || auditLoading}>
+          {auditLoading ? 'Running...' : 'Run Security Audit'}
+        </button>
+        {auditError && <div className="error">{auditError}</div>}
+        <h3>Audit Logs</h3>
+        <pre>{auditLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Audit Artifacts</h3>
+        <div className="artifacts">
+          {auditArtifacts.map((artifact) => (
             <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
               Download {artifact.filename}
             </a>

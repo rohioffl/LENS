@@ -470,6 +470,22 @@ class EcsManifestForm(AutomationTaskForm):
         return cleaned
 
 
+class AwsSecurityAuditForm(AutomationTaskForm):
+    access_key = forms.CharField(label="AWS Access Key ID")
+    secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
+    session_token = forms.CharField(required=False, label="AWS Session Token")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "aws_security_audit"
+
+    def clean(self):
+        cleaned = super().clean()
+        if not cleaned.get("access_key") or not cleaned.get("secret_key"):
+            raise forms.ValidationError("AWS access key and secret key are required.")
+        return cleaned
+
+
 class EksManifestForm(AutomationTaskForm):
     access_key = forms.CharField(label="AWS Access Key ID")
     secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
