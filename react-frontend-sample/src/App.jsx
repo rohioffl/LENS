@@ -319,6 +319,22 @@ const App = () => {
   const [auditError, setAuditError] = useState('');
   const [auditArtifacts, setAuditArtifacts] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [gcpAuditServiceKey, setGcpAuditServiceKey] = useState('');
+  const [gcpAuditServiceFileName, setGcpAuditServiceFileName] = useState('');
+  const [gcpAuditProjects, setGcpAuditProjects] = useState([]);
+  const [selectedGcpAuditProjects, setSelectedGcpAuditProjects] = useState([]);
+  const [gcpAuditProjectError, setGcpAuditProjectError] = useState('');
+  const [gcpAuditProjectsLoading, setGcpAuditProjectsLoading] = useState(false);
+  const [gcpAuditLogs, setGcpAuditLogs] = useState('');
+  const [gcpAuditError, setGcpAuditError] = useState('');
+  const [gcpAuditArtifacts, setGcpAuditArtifacts] = useState([]);
+  const [gcpAuditLoading, setGcpAuditLoading] = useState(false);
+  const [tcoCsvContent, setTcoCsvContent] = useState('');
+  const [tcoFileName, setTcoFileName] = useState('');
+  const [tcoLogs, setTcoLogs] = useState('');
+  const [tcoError, setTcoError] = useState('');
+  const [tcoArtifacts, setTcoArtifacts] = useState([]);
+  const [tcoLoading, setTcoLoading] = useState(false);
   const invProgressTimer = useRef(null);
   const gcpSubnetCacheRef = useRef(new Map());
   const gcpSubnetRequestRef = useRef(0);
@@ -449,6 +465,8 @@ const App = () => {
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
   useArtifactCleanup(auditArtifacts);
+  useArtifactCleanup(gcpAuditArtifacts);
+  useArtifactCleanup(tcoArtifacts);
   useArtifactCleanup(haArtifacts);
   useArtifactCleanup(classicArtifacts);
   useArtifactCleanup(ecrArtifacts);
@@ -669,6 +687,42 @@ const App = () => {
     }, debounceDelay);
     return () => clearTimeout(timer);
   }, [ecrServiceKey, view, ecrGcpProject]);
+
+  useEffect(() => {
+    if (view !== 'gcp_security_audit') {
+      setGcpAuditProjects([]);
+      setSelectedGcpAuditProjects([]);
+      setGcpAuditProjectError('');
+      setGcpAuditProjectsLoading(false);
+      return;
+    }
+    if (!gcpAuditServiceKey.trim()) {
+      setGcpAuditProjects([]);
+      setSelectedGcpAuditProjects([]);
+      setGcpAuditProjectError('');
+      setGcpAuditProjectsLoading(false);
+      return;
+    }
+    setGcpAuditProjectsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/gcp/projects/', {
+          service_key: gcpAuditServiceKey,
+        });
+        const options = res.projects || [];
+        setGcpAuditProjects(options);
+        setSelectedGcpAuditProjects(options.map((entry) => entry.project_id));
+        setGcpAuditProjectError('');
+      } catch (err) {
+        setGcpAuditProjectError(err.message || String(err));
+        setGcpAuditProjects([]);
+        setSelectedGcpAuditProjects([]);
+      } finally {
+        setGcpAuditProjectsLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [gcpAuditServiceKey, view]);
 
   useEffect(() => {
     if (!authReady || !['ecs_terraform', 'ecs_manifests'].includes(view)) {
@@ -1621,6 +1675,68 @@ const App = () => {
     }
   };
 
+  const runGcpSecurityAudit = async () => {
+    setGcpAuditError('');
+    setGcpAuditLogs('');
+    setGcpAuditArtifacts([]);
+    if (!gcpAuditServiceKey.trim()) {
+      setGcpAuditError('Upload a GCP service account JSON key.');
+      return;
+    }
+    if (!selectedGcpAuditProjects.length) {
+      setGcpAuditError('Select at least one GCP project.');
+      return;
+    }
+    setGcpAuditLoading(true);
+    try {
+      const res = await postJson('/api/tasks/run/', {
+        task_id: 'gcp_security_audit',
+        data: {
+          gcp_service_key: gcpAuditServiceKey,
+          projects: selectedGcpAuditProjects,
+        },
+      });
+      setGcpAuditLogs((prev) => mergeBackendLogs(prev, res.logs));
+      setGcpAuditArtifacts(createDownloadEntries(res.artifacts || []));
+    } catch (err) {
+      setGcpAuditError(err.message || String(err));
+      if (err.logs) {
+        setGcpAuditLogs((prev) => mergeBackendLogs(prev, err.logs));
+      }
+    } finally {
+      setGcpAuditLoading(false);
+    }
+  };
+
+  const runTcoReport = async () => {
+    setTcoError('');
+    setTcoLogs('');
+    setTcoArtifacts([]);
+    if (!tcoCsvContent.trim()) {
+      setTcoError('Upload an AWS billing CSV file.');
+      return;
+    }
+    setTcoLoading(true);
+    try {
+      const res = await postJson('/api/tasks/run/', {
+        task_id: 'tco_report',
+        data: {
+          csv_content: tcoCsvContent,
+          filename: tcoFileName,
+        },
+      });
+      setTcoLogs((prev) => mergeBackendLogs(prev, res.logs));
+      setTcoArtifacts(createDownloadEntries(res.artifacts || []));
+    } catch (err) {
+      setTcoError(err.message || String(err));
+      if (err.logs) {
+        setTcoLogs((prev) => mergeBackendLogs(prev, err.logs));
+      }
+    } finally {
+      setTcoLoading(false);
+    }
+  };
+
   const toggleInventoryRegion = (regionId) => {
     setInvRegions((prev) =>
       prev.includes(regionId) ? prev.filter((id) => id !== regionId) : [...prev, regionId]
@@ -1745,6 +1861,20 @@ const App = () => {
     setSelectedGcpSubnets([]);
   };
 
+  const toggleGcpAuditProject = (projectId) => {
+    setSelectedGcpAuditProjects((prev) =>
+      prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]
+    );
+  };
+
+  const selectAllGcpAuditProjects = () => {
+    setSelectedGcpAuditProjects(gcpAuditProjects.map((project) => project.project_id));
+  };
+
+  const clearGcpAuditProjects = () => {
+    setSelectedGcpAuditProjects([]);
+  };
+
   const currentInvLogText = invLogs || (invLoading ? 'Inventory is running, waiting for server logs...' : 'Logs will appear here once a run starts.');
 
   return (
@@ -1768,6 +1898,16 @@ const App = () => {
           <h2>AWS Standard Security Audit</h2>
           <p>Generate the standard security audit workbook with the same XLSX format and colors.</p>
           <button onClick={() => setView('security_audit')}>Run Audit</button>
+        </div>
+        <div className="task-card">
+          <h2>GCP Security Audit</h2>
+          <p>Generate a GCP security audit workbook from your service account JSON key.</p>
+          <button onClick={() => setView('gcp_security_audit')}>Run Audit</button>
+        </div>
+        <div className="task-card">
+          <h2>AWS TCO Report</h2>
+          <p>Upload an AWS billing CSV and generate the TCO XLSX summary.</p>
+          <button onClick={() => setView('tco_report')}>Run TCO</button>
         </div>
         <div className="task-card">
           <h2>HA VPN Builder</h2>
@@ -2922,6 +3062,133 @@ const App = () => {
         <h3>Audit Artifacts</h3>
         <div className="artifacts">
           {auditArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      )}
+
+      {view === 'gcp_security_audit' && (
+      <fieldset>
+        <legend>GCP Security Audit</legend>
+        <label>
+          Upload GCP Service Account JSON
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) {
+                setGcpAuditServiceKey('');
+                setGcpAuditServiceFileName('');
+                return;
+              }
+              setGcpAuditServiceFileName(file.name);
+              const reader = new FileReader();
+              reader.onload = (evt) => {
+                setGcpAuditServiceKey(evt.target?.result?.toString() || '');
+              };
+              reader.readAsText(file);
+            }}
+          />
+          {gcpAuditServiceFileName && <small className="file-indicator">Loaded: {gcpAuditServiceFileName}</small>}
+        </label>
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Projects</label>
+            <div className="pill-actions">
+              <button type="button" onClick={selectAllGcpAuditProjects} disabled={!gcpAuditProjects.length}>
+                Select all
+              </button>
+              <button type="button" onClick={clearGcpAuditProjects} disabled={!selectedGcpAuditProjects.length}>
+                Clear
+              </button>
+            </div>
+          </div>
+          {gcpAuditProjectsLoading && <small>Loading projects...</small>}
+          {gcpAuditProjectError && <div className="error">{gcpAuditProjectError}</div>}
+          {!gcpAuditProjectsLoading && !gcpAuditProjects.length && !gcpAuditProjectError && (
+            <div className="info-callout">No GCP projects detected for this service account.</div>
+          )}
+          <div className="checkbox-grid">
+            {gcpAuditProjects.map((project) => (
+              <label key={project.project_id} className="checkbox-item">
+                <input
+                  type="checkbox"
+                  checked={selectedGcpAuditProjects.includes(project.project_id)}
+                  onChange={() => toggleGcpAuditProject(project.project_id)}
+                />
+                <span>
+                  {project.display_name && project.display_name !== project.project_id
+                    ? `${project.display_name} (${project.project_id})`
+                    : project.project_id}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="info-callout">
+          Generates a multi-tab XLSX report for the selected projects.
+        </div>
+        <button
+          onClick={runGcpSecurityAudit}
+          disabled={!gcpAuditServiceKey.trim() || gcpAuditLoading || !selectedGcpAuditProjects.length}
+        >
+          {gcpAuditLoading ? 'Running...' : 'Run GCP Security Audit'}
+        </button>
+        {gcpAuditError && <div className="error">{gcpAuditError}</div>}
+        <h3>Audit Logs</h3>
+        <pre>{gcpAuditLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Audit Artifacts</h3>
+        <div className="artifacts">
+          {gcpAuditArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      )}
+
+      {view === 'tco_report' && (
+      <fieldset>
+        <legend>AWS TCO Report</legend>
+        <label>
+          Upload AWS Billing CSV
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) {
+                setTcoCsvContent('');
+                setTcoFileName('');
+                return;
+              }
+              setTcoFileName(file.name);
+              const reader = new FileReader();
+              reader.onload = (evt) => {
+                setTcoCsvContent(evt.target?.result?.toString() || '');
+              };
+              reader.readAsText(file);
+            }}
+          />
+          {tcoFileName && <small className="file-indicator">Loaded: {tcoFileName}</small>}
+        </label>
+        <div className="info-callout">
+          The report includes service summaries and region-level compute breakdowns based on the uploaded CSV.
+        </div>
+        <button onClick={runTcoReport} disabled={!tcoCsvContent.trim() || tcoLoading}>
+          {tcoLoading ? 'Running...' : 'Run TCO Report'}
+        </button>
+        {tcoError && <div className="error">{tcoError}</div>}
+        <h3>Report Logs</h3>
+        <pre>{tcoLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Report Artifacts</h3>
+        <div className="artifacts">
+          {tcoArtifacts.map((artifact) => (
             <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
               Download {artifact.filename}
             </a>

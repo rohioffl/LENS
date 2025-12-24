@@ -23,4 +23,6 @@ class InventoryConfig(AppConfig):
             ecr_migration_task,  # noqa: F401
             ha_vpn_task,  # noqa: F401
             aws_security_audit_task,  # noqa: F401
+            gcp_security_audit_task,  # noqa: F401
+            tco_task,  # noqa: F401
         )

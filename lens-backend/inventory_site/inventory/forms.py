@@ -486,6 +486,67 @@ class AwsSecurityAuditForm(AutomationTaskForm):
         return cleaned
 
 
+class GcpSecurityAuditForm(AutomationTaskForm):
+    gcp_service_key = forms.CharField(widget=forms.Textarea, label="GCP Service Account JSON/Base64")
+    projects = forms.JSONField(required=False, label="Selected GCP Projects")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "gcp_security_audit"
+        self._service_key_info: dict | None = None
+
+    def clean_gcp_service_key(self):
+        value = (self.cleaned_data.get("gcp_service_key") or "").strip()
+        if not value:
+            raise forms.ValidationError("Provide the service-account JSON.")
+        info = None
+        try:
+            info = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                decoded = base64.b64decode(value).decode("utf-8")
+                info = json.loads(decoded)
+            except Exception as exc:
+                raise forms.ValidationError("Service key must be valid JSON or base64 encoded JSON.") from exc
+        if not isinstance(info, dict):
+            raise forms.ValidationError("Service key JSON must be an object.")
+        self._service_key_info = info
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        if not cleaned.get("gcp_service_key"):
+            self.add_error("gcp_service_key", "GCP service account JSON is required.")
+        projects = cleaned.get("projects") or []
+        if isinstance(projects, str):
+            try:
+                projects = json.loads(projects)
+            except json.JSONDecodeError:
+                self.add_error("projects", "Expected a JSON array of project IDs.")
+                projects = []
+        if projects and not isinstance(projects, list):
+            self.add_error("projects", "Expected a JSON array of project IDs.")
+            projects = []
+        cleaned["projects"] = [str(p).strip() for p in projects if str(p).strip()]
+        return cleaned
+
+
+class TcoReportForm(AutomationTaskForm):
+    csv_content = forms.CharField(widget=forms.Textarea, label="AWS Billing CSV Content")
+    filename = forms.CharField(required=False, label="CSV File Name")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "tco_report"
+
+    def clean(self):
+        cleaned = super().clean()
+        content = (cleaned.get("csv_content") or "").strip()
+        if not content:
+            self.add_error("csv_content", "Upload an AWS billing CSV file.")
+        return cleaned
+
+
 class EksManifestForm(AutomationTaskForm):
     access_key = forms.CharField(label="AWS Access Key ID")
     secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
