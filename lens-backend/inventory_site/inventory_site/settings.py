@@ -130,6 +130,12 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 # --------------------------------------------------
+# UPLOAD LIMITS
+# --------------------------------------------------
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", 50 * 1024 * 1024))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", 50 * 1024 * 1024))
+
+# --------------------------------------------------
 # LOGGING
 # --------------------------------------------------
 LOGGING = {

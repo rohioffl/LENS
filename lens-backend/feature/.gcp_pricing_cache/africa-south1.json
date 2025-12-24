@@ -1,0 +1,22 @@
+{
+  "region": "africa-south1",
+  "generated_at": "2025-12-24T23:00:46",
+  "predefined": {},
+  "family_rates": {
+    "e2": {
+      "mem": 0.003823977,
+      "cpu": 0.02852956
+    },
+    "n2": {
+      "mem": 0.005541996,
+      "cpu": 0.04134719
+    },
+    "n2d": {},
+    "c2": {},
+    "c2d": {}
+  },
+  "custom": {
+    "cpu_per_core_hour": 0.0453222,
+    "mem_per_gib_hour": 0.005541996
+  }
+}

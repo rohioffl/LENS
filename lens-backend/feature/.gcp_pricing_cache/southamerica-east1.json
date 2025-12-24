@@ -1,0 +1,22 @@
+{
+  "region": "southamerica-east1",
+  "generated_at": "2025-12-24T23:05:13",
+  "predefined": {},
+  "family_rates": {
+    "e2": {
+      "cpu": 0.0346242,
+      "mem": 0.00464025
+    },
+    "n2": {
+      "mem": 0.006725,
+      "cpu": 0.05018
+    },
+    "n2d": {},
+    "c2": {},
+    "c2d": {}
+  },
+  "custom": {
+    "cpu_per_core_hour": 0.001040074,
+    "mem_per_gib_hour": 0.00077
+  }
+}

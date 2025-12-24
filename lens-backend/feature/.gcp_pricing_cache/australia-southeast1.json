@@ -1,0 +1,22 @@
+{
+  "region": "australia-southeast1",
+  "generated_at": "2025-12-24T23:03:02",
+  "predefined": {},
+  "family_rates": {
+    "e2": {
+      "cpu": 0.03095064,
+      "mem": 0.00414759
+    },
+    "n2": {
+      "cpu": 0.044856,
+      "mem": 0.006011
+    },
+    "n2d": {},
+    "c2": {},
+    "c2d": {}
+  },
+  "custom": {
+    "cpu_per_core_hour": 0.044856,
+    "mem_per_gib_hour": 0.0006462
+  }
+}

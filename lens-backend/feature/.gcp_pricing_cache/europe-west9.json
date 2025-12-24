@@ -1,0 +1,22 @@
+{
+  "region": "europe-west9",
+  "generated_at": "2025-12-24T23:03:50",
+  "predefined": {},
+  "family_rates": {
+    "e2": {
+      "cpu": 0.025302,
+      "mem": 0.003391
+    },
+    "n2": {
+      "cpu": 0.03666876,
+      "mem": 0.00491492
+    },
+    "n2d": {},
+    "c2": {},
+    "c2d": {}
+  },
+  "custom": {
+    "cpu_per_core_hour": 0.025302,
+    "mem_per_gib_hour": 0.0041064
+  }
+}
