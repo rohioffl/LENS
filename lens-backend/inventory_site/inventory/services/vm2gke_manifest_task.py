@@ -49,7 +49,10 @@ def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
         raise TaskExecutionError("Helper script feature/vm2gke-manifest.py not found.")
     
     provider = clean_data.get("provider", "aws").lower()
-    # Gemini-related parameters removed - AI functionality no longer used
+    gemini_model = clean_data.get("gemini_model") or os.environ.get("VM2GKE_MANIFEST_GEMINI_MODEL")
+    gemini_fallbacks = clean_data.get("gemini_fallbacks") or os.environ.get("VM2GKE_MANIFEST_GEMINI_FALLBACKS")
+    # Match ECS pattern: prioritize form data, then override env var, then general env var from .env
+    gemini_api_key = clean_data.get("gemini_api_key") or os.environ.get("VM2GKE_MANIFEST_GEMINI_API_KEY_OVERRIDE")
 
     cmd = [
         sys.executable,
@@ -83,7 +86,10 @@ def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
         elif isinstance(selected_containers, str):
             cmd.extend(["--container", selected_containers])
     
-    # Gemini model arguments removed - AI functionality no longer used
+    if gemini_model:
+        cmd.extend(["--model", gemini_model])
+    for fb in _split_csv(gemini_fallbacks):
+        cmd.extend(["--fallback-model", fb])
 
     env = os.environ.copy()
     env.update(
@@ -122,7 +128,31 @@ def _run_manifest_cli(clean_data: dict, output_dir: Path) -> str:
             except Exception as exc:
                 raise TaskExecutionError(f"Failed to process GCP service account key: {exc}")
     
-    # Gemini API key no longer required - AI functionality removed
+    # Match ECS pattern: check form/override first, then fall back to GEMINI_API_KEY from .env
+    gemini_key = gemini_api_key or env.get("GEMINI_API_KEY")
+    if gemini_key:
+        gemini_key = gemini_key.strip()
+        if gemini_key:
+            env["GEMINI_API_KEY"] = gemini_key
+        else:
+            raise TaskExecutionError(
+                "GEMINI_API_KEY is empty or invalid. Please set a valid GEMINI_API_KEY in .env file "
+                "(located at lens-backend/.env) or provide it in the form. The API key should be a non-empty string."
+            )
+    elif not env.get("GEMINI_API_KEY"):
+        # Check if .env file exists and provide helpful error message
+        from pathlib import Path
+        env_path = Path(__file__).resolve().parents[3] / ".env"
+        env_hint = ""
+        if env_path.exists():
+            env_hint = f" The .env file exists at {env_path}, but GEMINI_API_KEY is not set in it."
+        else:
+            env_hint = f" The .env file should be located at {env_path.parent / '.env'}."
+        raise TaskExecutionError(
+            f"GEMINI_API_KEY is not configured.{env_hint} "
+            "Add 'GEMINI_API_KEY=your-api-key' to your .env file or provide it in the form. "
+            "You can get an API key from: https://makersuite.google.com/app/apikey"
+        )
 
     proc = subprocess.Popen(
         cmd,
@@ -210,7 +240,7 @@ automation_registry.register(
     TaskDefinition(
         task_id="vm2gke_manifests",
         label="VM → GKE Manifests",
-        description="Generate Kubernetes manifests for VM instances (EC2 or GCP Compute Engine) based on discovered Docker containers.",
+        description="Generate Kubernetes manifests for VM instances (EC2 or GCP Compute Engine) with Gemini assistance.",
         form_class=Vm2GkeManifestForm,
         runner=run_vm2gke_manifest_task,
     )

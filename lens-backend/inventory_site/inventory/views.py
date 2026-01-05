@@ -912,9 +912,10 @@ def gcp_instance_docker_containers_api(request):
                             "id": parts[1][:12],
                         })
         
-        # Get environment variables from containers
+        # Get detailed information (ports, env vars) from containers
         env_vars = {}
         for container in containers:
+            # Get environment variables
             env_cmd = [
                 gcloud_cmd,
                 "compute",
@@ -929,7 +930,23 @@ def gcp_instance_docker_containers_api(request):
                 "--quiet",
             ]
             
+            # Get full container inspect for ports
+            inspect_cmd = [
+                gcloud_cmd,
+                "compute",
+                "ssh",
+                instance_name,
+                "--project",
+                project,
+                "--zone",
+                zone,
+                "--command",
+                f"sudo docker inspect {container['id']} --format '{{{{json .}}}}'",
+                "--quiet",
+            ]
+            
             try:
+                # Get env vars
                 result = subprocess.run(env_cmd, text=True, capture_output=True, timeout=30, env=env)
                 if result.returncode == 0 and result.stdout and result.stdout.strip():
                     container_env_vars = {}
@@ -939,6 +956,63 @@ def gcp_instance_docker_containers_api(request):
                             container_env_vars[key] = value
                     if container_env_vars:
                         env_vars[container["name"]] = container_env_vars
+                
+                # Get ports from full inspect
+                result = subprocess.run(inspect_cmd, text=True, capture_output=True, timeout=30, env=env)
+                if result.returncode == 0 and result.stdout and result.stdout.strip():
+                    try:
+                        import json
+                        inspect_data = json.loads(result.stdout.strip())
+                        # Extract exposed ports
+                        exposed_ports = []
+                        config_ports = inspect_data.get("Config", {}).get("ExposedPorts", {})
+                        if config_ports:
+                            for port_spec in config_ports.keys():
+                                if "/" in port_spec:
+                                    port, protocol = port_spec.split("/", 1)
+                                else:
+                                    port, protocol = port_spec, "tcp"
+                                try:
+                                    exposed_ports.append({"port": int(port), "protocol": protocol.upper()})
+                                except ValueError:
+                                    pass
+                        
+                        # Extract published ports
+                        published_ports = []
+                        network_settings = inspect_data.get("NetworkSettings", {}).get("Ports", {})
+                        if network_settings:
+                            for port_spec, bindings in network_settings.items():
+                                if "/" in port_spec:
+                                    port, protocol = port_spec.split("/", 1)
+                                else:
+                                    port, protocol = port_spec, "tcp"
+                                try:
+                                    port_num = int(port)
+                                    if bindings and isinstance(bindings, list) and len(bindings) > 0:
+                                        host_port = bindings[0].get("HostPort")
+                                        published_ports.append({
+                                            "container_port": port_num,
+                                            "host_port": int(host_port) if host_port else None,
+                                            "protocol": protocol.upper()
+                                        })
+                                    else:
+                                        published_ports.append({
+                                            "container_port": port_num,
+                                            "host_port": None,
+                                            "protocol": protocol.upper()
+                                        })
+                                except (ValueError, TypeError):
+                                    pass
+                        
+                        # Use published ports if available, otherwise exposed ports
+                        if published_ports:
+                            container["ports"] = published_ports
+                        elif exposed_ports:
+                            container["ports"] = exposed_ports
+                        else:
+                            container["ports"] = []
+                    except json.JSONDecodeError:
+                        pass
             except Exception:
                 pass
         
@@ -1151,6 +1225,89 @@ def aws_instance_docker_containers_api(request):
                                         container_env_vars[key] = value
                                 if container_env_vars:
                                     env_vars[container["name"]] = container_env_vars
+                
+                # Get ports from full inspect
+                ports_cmd = [
+                    "aws",
+                    "ssm",
+                    "send-command",
+                    "--instance-ids",
+                    instance_id,
+                    "--region",
+                    region,
+                    "--document-name",
+                    "AWS-RunShellScript",
+                    "--parameters",
+                    f"commands=['docker inspect {container['id']} --format \"{{{{json .}}}}\"']",
+                    "--output",
+                    "json",
+                ]
+                
+                result = subprocess.run(ports_cmd, text=True, capture_output=True, timeout=30, env=env)
+                if result.returncode == 0:
+                    command_data = json.loads(result.stdout) if result.stdout else {}
+                    command_id = command_data.get("Command", {}).get("CommandId", "")
+                    
+                    if command_id:
+                        time.sleep(2)
+                        output_result = subprocess.run(output_cmd, text=True, capture_output=True, timeout=30, env=env)
+                        invocation = json.loads(output_result.stdout) if output_result.stdout else {}
+                        
+                        if invocation.get("Status") == "Success":
+                            stdout = invocation.get("StandardOutputContent", "").strip()
+                            if stdout:
+                                try:
+                                    inspect_data = json.loads(stdout)
+                                    # Extract exposed ports
+                                    exposed_ports = []
+                                    config_ports = inspect_data.get("Config", {}).get("ExposedPorts", {})
+                                    if config_ports:
+                                        for port_spec in config_ports.keys():
+                                            if "/" in port_spec:
+                                                port, protocol = port_spec.split("/", 1)
+                                            else:
+                                                port, protocol = port_spec, "tcp"
+                                            try:
+                                                exposed_ports.append({"port": int(port), "protocol": protocol.upper()})
+                                            except ValueError:
+                                                pass
+                                    
+                                    # Extract published ports
+                                    published_ports = []
+                                    network_settings = inspect_data.get("NetworkSettings", {}).get("Ports", {})
+                                    if network_settings:
+                                        for port_spec, bindings in network_settings.items():
+                                            if "/" in port_spec:
+                                                port, protocol = port_spec.split("/", 1)
+                                            else:
+                                                port, protocol = port_spec, "tcp"
+                                            try:
+                                                port_num = int(port)
+                                                if bindings and isinstance(bindings, list) and len(bindings) > 0:
+                                                    host_port = bindings[0].get("HostPort")
+                                                    published_ports.append({
+                                                        "container_port": port_num,
+                                                        "host_port": int(host_port) if host_port else None,
+                                                        "protocol": protocol.upper()
+                                                    })
+                                                else:
+                                                    published_ports.append({
+                                                        "container_port": port_num,
+                                                        "host_port": None,
+                                                        "protocol": protocol.upper()
+                                                    })
+                                            except (ValueError, TypeError):
+                                                pass
+                                    
+                                    # Use published ports if available, otherwise exposed ports
+                                    if published_ports:
+                                        container["ports"] = published_ports
+                                    elif exposed_ports:
+                                        container["ports"] = exposed_ports
+                                    else:
+                                        container["ports"] = []
+                                except json.JSONDecodeError:
+                                    pass
             except Exception:
                 pass
         

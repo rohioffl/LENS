@@ -3,7 +3,7 @@
 """
 VM to GKE Migration Script
 Discovers VMs (EC2 instances or GCP Compute Engine VMs) and generates Kubernetes manifests
-for GKE deployment based on discovered Docker containers and VM metadata.
+for GKE deployment using Gemini API.
 """
 import os
 import sys
@@ -22,7 +22,8 @@ import re
 import time
 import platform
 from pathlib import Path
-# AI/Gemini imports removed - script now generates manifests directly
+import google.generativeai as genai
+from google.api_core import exceptions as gapi_exceptions
 import yaml
 
 
@@ -467,8 +468,9 @@ def _discover_docker_containers_ec2(instance_id: str, region: str, selected_cont
                                     "id": parts[1][:12],
                                 })
         
-        # Get environment variables from running containers
+        # Get detailed information (ports, env vars) from running containers
         for container in docker_info["containers"]:
+            # Get environment variables
             env_cmd = [
                 "aws",
                 "ssm",
@@ -485,7 +487,25 @@ def _discover_docker_containers_ec2(instance_id: str, region: str, selected_cont
                 "json",
             ]
             
+            # Get ports (exposed and published)
+            ports_cmd = [
+                "aws",
+                "ssm",
+                "send-command",
+                "--instance-ids",
+                instance_id,
+                "--region",
+                region,
+                "--document-name",
+                "AWS-RunShellScript",
+                "--parameters",
+                f"commands=['docker inspect {container['id']} --format \"{{{{json .}}}}\"']",
+                "--output",
+                "json",
+            ]
+            
             try:
+                # Get env vars
                 result = subprocess.check_output(env_cmd, text=True, stderr=subprocess.DEVNULL, timeout=10)
                 command_data = json.loads(result)
                 command_id = command_data.get("Command", {}).get("CommandId", "")
@@ -506,8 +526,76 @@ def _discover_docker_containers_ec2(instance_id: str, region: str, selected_cont
                                     env_vars[key] = value
                             if env_vars:
                                 docker_info["env_vars"][container["name"]] = env_vars
+                
+                # Get ports from full inspect
+                result = subprocess.check_output(ports_cmd, text=True, stderr=subprocess.DEVNULL, timeout=10)
+                command_data = json.loads(result)
+                command_id = command_data.get("Command", {}).get("CommandId", "")
+                
+                if command_id:
+                    time.sleep(2)
+                    output_cmd[3] = command_id
+                    output_result = subprocess.check_output(output_cmd, text=True, stderr=subprocess.DEVNULL)
+                    invocation = json.loads(output_result)
+                    
+                    if invocation.get("Status") == "Success":
+                        stdout = invocation.get("StandardOutputContent", "").strip()
+                        if stdout:
+                            try:
+                                inspect_data = json.loads(stdout)
+                                # Extract exposed ports
+                                exposed_ports = []
+                                config_ports = inspect_data.get("Config", {}).get("ExposedPorts", {})
+                                if config_ports:
+                                    for port_spec in config_ports.keys():
+                                        # Format: "3000/tcp" or "3000"
+                                        if "/" in port_spec:
+                                            port, protocol = port_spec.split("/", 1)
+                                        else:
+                                            port, protocol = port_spec, "tcp"
+                                        try:
+                                            exposed_ports.append({"port": int(port), "protocol": protocol.upper()})
+                                        except ValueError:
+                                            pass
+                                
+                                # Extract published ports (host:container mappings)
+                                published_ports = []
+                                network_settings = inspect_data.get("NetworkSettings", {}).get("Ports", {})
+                                if network_settings:
+                                    for port_spec, bindings in network_settings.items():
+                                        if "/" in port_spec:
+                                            port, protocol = port_spec.split("/", 1)
+                                        else:
+                                            port, protocol = port_spec, "tcp"
+                                        try:
+                                            port_num = int(port)
+                                            if bindings and isinstance(bindings, list) and len(bindings) > 0:
+                                                host_port = bindings[0].get("HostPort")
+                                                published_ports.append({
+                                                    "container_port": port_num,
+                                                    "host_port": int(host_port) if host_port else None,
+                                                    "protocol": protocol.upper()
+                                                })
+                                            else:
+                                                published_ports.append({
+                                                    "container_port": port_num,
+                                                    "host_port": None,
+                                                    "protocol": protocol.upper()
+                                                })
+                                        except (ValueError, TypeError):
+                                            pass
+                                
+                                # Use published ports if available, otherwise exposed ports
+                                if published_ports:
+                                    container["ports"] = published_ports
+                                elif exposed_ports:
+                                    container["ports"] = exposed_ports
+                                else:
+                                    container["ports"] = []
+                            except json.JSONDecodeError:
+                                pass
             except Exception:
-                pass  # Skip if we can't get env vars for this container
+                pass  # Skip if we can't get details for this container
                 
     except subprocess.CalledProcessError as exc:
         # Check the error output to provide more specific feedback
@@ -644,8 +732,9 @@ def _discover_docker_containers_gcp(instance_name: str, project: str, zone: str,
                             "id": parts[1][:12],
                         })
         
-        # Get environment variables from selected containers only
+        # Get detailed information (ports, env vars) from selected containers only
         for container in docker_info["containers"]:
+            # Get environment variables
             env_cmd = [
                 gcloud_cmd,
                 "compute",
@@ -660,7 +749,23 @@ def _discover_docker_containers_gcp(instance_name: str, project: str, zone: str,
                 "--quiet",
             ]
             
+            # Get full container inspect for ports
+            inspect_cmd = [
+                gcloud_cmd,
+                "compute",
+                "ssh",
+                instance_name,
+                "--project",
+                project,
+                "--zone",
+                zone,
+                "--command",
+                f"sudo docker inspect {container['id']} --format '{{{{json .}}}}'",
+                "--quiet",
+            ]
+            
             try:
+                # Get env vars
                 result = subprocess.run(env_cmd, text=True, capture_output=True, timeout=30, env=env)
                 if result.returncode == 0 and result.stdout and result.stdout.strip():
                     env_vars = {}
@@ -670,6 +775,63 @@ def _discover_docker_containers_gcp(instance_name: str, project: str, zone: str,
                             env_vars[key] = value
                     if env_vars:
                         docker_info["env_vars"][container["name"]] = env_vars
+                
+                # Get ports from full inspect
+                result = subprocess.run(inspect_cmd, text=True, capture_output=True, timeout=30, env=env)
+                if result.returncode == 0 and result.stdout and result.stdout.strip():
+                    try:
+                        inspect_data = json.loads(result.stdout.strip())
+                        # Extract exposed ports
+                        exposed_ports = []
+                        config_ports = inspect_data.get("Config", {}).get("ExposedPorts", {})
+                        if config_ports:
+                            for port_spec in config_ports.keys():
+                                # Format: "3000/tcp" or "3000"
+                                if "/" in port_spec:
+                                    port, protocol = port_spec.split("/", 1)
+                                else:
+                                    port, protocol = port_spec, "tcp"
+                                try:
+                                    exposed_ports.append({"port": int(port), "protocol": protocol.upper()})
+                                except ValueError:
+                                    pass
+                        
+                        # Extract published ports (host:container mappings)
+                        published_ports = []
+                        network_settings = inspect_data.get("NetworkSettings", {}).get("Ports", {})
+                        if network_settings:
+                            for port_spec, bindings in network_settings.items():
+                                if "/" in port_spec:
+                                    port, protocol = port_spec.split("/", 1)
+                                else:
+                                    port, protocol = port_spec, "tcp"
+                                try:
+                                    port_num = int(port)
+                                    if bindings and isinstance(bindings, list) and len(bindings) > 0:
+                                        host_port = bindings[0].get("HostPort")
+                                        published_ports.append({
+                                            "container_port": port_num,
+                                            "host_port": int(host_port) if host_port else None,
+                                            "protocol": protocol.upper()
+                                        })
+                                    else:
+                                        published_ports.append({
+                                            "container_port": port_num,
+                                            "host_port": None,
+                                            "protocol": protocol.upper()
+                                        })
+                                except (ValueError, TypeError):
+                                    pass
+                        
+                        # Use published ports if available, otherwise exposed ports
+                        if published_ports:
+                            container["ports"] = published_ports
+                        elif exposed_ports:
+                            container["ports"] = exposed_ports
+                        else:
+                            container["ports"] = []
+                    except json.JSONDecodeError:
+                        pass
             except Exception:
                 pass
                 
@@ -952,10 +1114,71 @@ def _describe_instance_type(instance_type: str, region: str) -> dict:
         return {"cpu_vcpu": 0.0, "memory_mb": 0}
 
 
-# Gemini API functionality removed - manifests are generated directly
+# Configure Gemini API
 def configure_gemini(model_name: str, fallback_models=None):
-    """Deprecated: Gemini functionality has been removed."""
-    raise RuntimeError("AI/Gemini functionality has been removed. Manifests are now generated directly from VM data.")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY environment variable not set. Export the key, e.g.\n"
+            "export GEMINI_API_KEY=\"<your-api-key>\"\n"
+            "You can get an API key from: https://makersuite.google.com/app/apikey"
+        )
+    api_key = api_key.strip()
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY environment variable is empty. Please set a valid API key.\n"
+            "You can get an API key from: https://makersuite.google.com/app/apikey"
+        )
+    genai.configure(api_key=api_key)
+
+    def expand_model_aliases(name: str):
+        if not name:
+            return []
+
+        aliases = []
+
+        def add_alias(alias):
+            alias = (alias or "").strip()
+            if alias and alias not in aliases:
+                aliases.append(alias)
+
+        add_alias(name)
+
+        if not name.startswith("models/"):
+            add_alias(f"models/{name}")
+        else:
+            base = name[len("models/"):]
+            add_alias(base)
+
+        for alias in list(aliases):
+            if alias.endswith("-latest"):
+                base = alias[:-len("-latest")]
+                add_alias(base)
+                if not base.startswith("models/"):
+                    add_alias(f"models/{base}")
+            else:
+                add_alias(f"{alias}-latest")
+                if alias.startswith("models/"):
+                    base = alias[len("models/"):]
+                    add_alias(f"models/{base}-latest")
+
+        return aliases
+
+    ordered_candidates = []
+    seen = set()
+    for raw_candidate in [model_name, *(fallback_models or [])]:
+        if not raw_candidate:
+            continue
+        for candidate in expand_model_aliases(raw_candidate):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            ordered_candidates.append(candidate)
+
+    if not ordered_candidates:
+        raise RuntimeError("No Gemini model names provided to configure_gemini.")
+
+    return GeminiModelClient(ordered_candidates)
 
     def expand_model_aliases(name: str):
         if not name:
@@ -1035,168 +1258,158 @@ def _response_to_text(response) -> str:
     return ""
 
 
-# GeminiModelClient class removed - AI functionality no longer used
+class GeminiModelClient:
+    def __init__(self, model_names):
+        self._model_order = tuple(model_names)
+        self._models = {}
+
+    def _ensure_model(self, model_name):
+        if model_name in self._models:
+            return self._models[model_name], None
+        try:
+            model = genai.GenerativeModel(model_name)
+            setattr(model, "_vm2gke_model_name", model_name)
+            self._models[model_name] = model
+            return model, None
+        except gapi_exceptions.GoogleAPICallError as exc:
+            code_name = getattr(getattr(exc, "code", None), "name", "") or exc.__class__.__name__
+            return None, (code_name, str(exc), exc)
+        except Exception as exc:
+            code_name = exc.__class__.__name__
+            return None, (code_name, str(exc), exc)
+
+    def generate(self, prompt: str, instance_name: str) -> str:
+        errors = []
+        for idx, model_name in enumerate(self._model_order):
+            model, init_error = self._ensure_model(model_name)
+            if model is None:
+                code, message, exc_obj = init_error
+                errors.append((model_name, code, message))
+                if code == "NOT_FOUND":
+                    continue
+                raise RuntimeError(
+                    f"Failed to initialize Gemini model '{model_name}' while processing instance '{instance_name}'."
+                    f" Original error: {message}"
+                ) from exc_obj
+
+            try:
+                response = model.generate_content(prompt)
+                if idx > 0:
+                    print(
+                        f"[INFO] Instance {instance_name}: using fallback Gemini model '{model_name}'"
+                    )
+                response_text = _response_to_text(response)
+                if response_text:
+                    return response_text
+                errors.append((model_name, "EMPTY_RESPONSE", "Gemini response did not contain text content"))
+                continue
+            except gapi_exceptions.GoogleAPICallError as exc:
+                code_name = getattr(getattr(exc, "code", None), "name", "") or exc.__class__.__name__
+                errors.append((model_name, code_name, str(exc)))
+                if code_name == "NOT_FOUND":
+                    continue
+                raise RuntimeError(
+                    f"Gemini API call failed for instance '{instance_name}' using model '{model_name}'."
+                    f" Original error: {exc}"
+                ) from exc
+            except Exception as exc:
+                code_name = exc.__class__.__name__
+                errors.append((model_name, code_name, str(exc)))
+                raise RuntimeError(
+                    f"Unexpected error during Gemini call for instance '{instance_name}' using model '{model_name}': {exc}"
+                ) from exc
+
+        error_details = "; ".join(
+            f"{name} ({code}): {message}" for name, code, message in errors
+        ) or "<no additional error context>"
+        raise RuntimeError(
+            f"Gemini API call failed for instance '{instance_name}' after trying models"
+            f" {', '.join(self._model_order)}. Errors: {error_details}"
+        )
 
 
-def generate_manifests_direct(instance_name: str, vm_data: dict, namespace: str, provider: str) -> str:
-    """Generate Kubernetes manifests directly from VM data without AI."""
+def call_gemini(client: GeminiModelClient, instance_name: str, vm_data: dict, namespace: str, provider: str):
+    """Call Gemini API to convert VM configuration into Kubernetes manifests."""
+    # Build Docker information summary
+    docker_summary = ""
     docker_containers = vm_data.get("docker_containers", [])
-    docker_env_vars = vm_data.get("docker_env_vars", {})
-    has_public_ip = bool(vm_data.get("public_ip") or (provider == "gcp" and any(
-        ni.get("accessConfigs") for ni in vm_data.get("network_interfaces", [])
-    )))
-    
-    manifests = []
-    
-    # Generate Deployment for each Docker container
-    if docker_containers:
-        for container in docker_containers:
-            container_name = container.get("name", "unnamed")
-            image = container.get("image", "nginx:latest")
-            
-            # Get environment variables for this container
-            env_vars = docker_env_vars.get(container_name, {})
-            
-            # Create ConfigMap if there are environment variables
-            if env_vars:
-                configmap = {
-                    "apiVersion": "v1",
-                    "kind": "ConfigMap",
-                    "metadata": {
-                        "name": f"{_to_k8s_name(container_name, default=container_name)}-config",
-                        "namespace": namespace,
-                    },
-                    "data": {k: str(v) for k, v in env_vars.items() if not _is_secret_value(str(v))}
-                }
-                manifests.append(configmap)
-            
-            # Create Deployment
-            deployment = {
-                "apiVersion": "apps/v1",
-                "kind": "Deployment",
-                "metadata": {
-                    "name": _to_k8s_name(container_name, default=container_name),
-                    "namespace": namespace,
-                    "labels": {
-                        "app": _to_k8s_name(container_name, default=container_name),
-                    }
-                },
-                "spec": {
-                    "replicas": 1,
-                    "selector": {
-                        "matchLabels": {
-                            "app": _to_k8s_name(container_name, default=container_name),
-                        }
-                    },
-                    "template": {
-                        "metadata": {
-                            "labels": {
-                                "app": _to_k8s_name(container_name, default=container_name),
-                            }
-                        },
-                        "spec": {
-                            "containers": [{
-                                "name": _to_k8s_name(container_name, default=container_name),
-                                "image": image,
-                                "env": [
-                                    {"name": k, "valueFrom": {"configMapKeyRef": {"name": f"{_to_k8s_name(container_name, default=container_name)}-config", "key": k}}}
-                                    if k in env_vars and not _is_secret_value(str(env_vars.get(k, ""))) else
-                                    {"name": k, "value": str(v)}
-                                    for k, v in env_vars.items()
-                                ] if env_vars else [],
-                            }]
-                        }
-                    }
-                }
-            }
-            manifests.append(deployment)
-            
-            # Create Service
-            service = {
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": {
-                    "name": _to_k8s_name(container_name, default=container_name),
-                    "namespace": namespace,
-                },
-                "spec": {
-                    "type": "LoadBalancer" if has_public_ip else "ClusterIP",
-                    "selector": {
-                        "app": _to_k8s_name(container_name, default=container_name),
-                    },
-                    "ports": [{
-                        "port": 80,
-                        "targetPort": 80,
-                        "protocol": "TCP",
-                    }]
-                }
-            }
-            manifests.append(service)
+    # Check if docker info exists and has an error
+    docker_data = vm_data.get("docker", {})
+    if isinstance(docker_data, dict):
+        docker_error = docker_data.get("error")
     else:
-        # No Docker containers found, create a basic deployment based on instance name
-        image = "nginx:latest"  # Default image
-        deployment = {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": _to_k8s_name(instance_name, default=instance_name),
-                "namespace": namespace,
-                "labels": {
-                    "app": _to_k8s_name(instance_name, default=instance_name),
-                }
-            },
-            "spec": {
-                "replicas": 1,
-                "selector": {
-                    "matchLabels": {
-                        "app": _to_k8s_name(instance_name, default=instance_name),
-                    }
-                },
-                "template": {
-                    "metadata": {
-                        "labels": {
-                            "app": _to_k8s_name(instance_name, default=instance_name),
-                        }
-                    },
-                    "spec": {
-                        "containers": [{
-                            "name": _to_k8s_name(instance_name, default=instance_name),
-                            "image": image,
-                        }]
-                    }
-                }
-            }
-        }
-        manifests.append(deployment)
-        
-        service = {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": _to_k8s_name(instance_name, default=instance_name),
-                "namespace": namespace,
-            },
-            "spec": {
-                "type": "LoadBalancer" if has_public_ip else "ClusterIP",
-                "selector": {
-                    "app": _to_k8s_name(instance_name, default=instance_name),
-                },
-                "ports": [{
-                    "port": 80,
-                    "targetPort": 80,
-                    "protocol": "TCP",
-                }]
-            }
-        }
-        manifests.append(service)
+        docker_error = None
     
-    # Convert manifests to YAML string
-    yaml_output = ""
-    for manifest in manifests:
-        yaml_output += yaml.dump(manifest, sort_keys=False, default_flow_style=False)
-        yaml_output += "---\n"
+    if docker_containers:
+        docker_summary = "\n\nDocker Containers Found:\n"
+        for container in docker_containers:
+            container_name = container.get('name', 'unnamed')
+            docker_summary += f"- {container_name}: {container.get('image', 'unknown')} ({container.get('status', 'unknown')})\n"
+            
+            # Add ports information
+            ports = container.get("ports", [])
+            if ports:
+                port_list = []
+                for p in ports:
+                    if isinstance(p, dict):
+                        if "container_port" in p:
+                            port_str = f"{p['container_port']}/{p.get('protocol', 'TCP').lower()}"
+                            if p.get("host_port"):
+                                port_str += f" (host: {p['host_port']})"
+                        else:
+                            port_str = f"{p.get('port', 'unknown')}/{p.get('protocol', 'TCP').lower()}"
+                        port_list.append(port_str)
+                    else:
+                        port_list.append(str(p))
+                docker_summary += f"  Ports: {', '.join(port_list)}\n"
+            
+            # Add environment variables if available
+            env_vars = vm_data.get("docker_env_vars", {}).get(container_name, {})
+            if env_vars:
+                docker_summary += f"  Environment Variables: {', '.join(list(env_vars.keys())[:10])}"
+                if len(env_vars) > 10:
+                    docker_summary += f" ... and {len(env_vars) - 10} more"
+                docker_summary += "\n"
+    elif docker_error:
+        docker_summary = f"\n\nNote: Could not discover Docker containers ({docker_error}). "
+        docker_summary += "Will infer container configuration from VM metadata, user data, instance tags, and instance name.\n"
     
-    return yaml_output.rstrip("---\n")
+    prompt = f"""
+    You are an expert in VM to GKE migration.
+    Convert the following {provider} VM instance configuration into Kubernetes manifests.
+    
+    CRITICAL REQUIREMENTS:
+    1. Use the EXACT ports discovered from Docker containers. If a container exposes port 3000, use port 3000 in the Deployment and Service, NOT port 80.
+    2. Use the EXACT Docker images found on the VM - do not change or infer different images.
+    3. Use ALL environment variables discovered from Docker containers - include them in ConfigMaps (non-sensitive) or Secrets (sensitive).
+    4. For each Docker container, create a separate Deployment with the exact container configuration.
+    5. Service ports must match the container ports exactly (e.g., if container uses 3000, Service must use 3000).
+    6. Include proper health checks (livenessProbe, readinessProbe) based on the discovered ports.
+    
+    Manifest Requirements:
+    - Deployment (replicas: 1, can be adjusted based on workload requirements)
+    - Service (use type LoadBalancer if the VM has a public IP, otherwise use ClusterIP)
+    - ConfigMap for non-sensitive environment variables
+    - Secret for sensitive environment variables (passwords, keys, tokens, etc.)
+    - All objects (except Namespace) must be scoped to namespace '{namespace}'.
+    - Do not generate PersistentVolume or PersistentVolumeClaim resources unless explicitly needed.
+    - Do NOT generate NetworkPolicy resources.
+    - Output must be valid YAML, separated by '---'.
+    - Use the exact ports, images, and environment variables from the Docker container discovery.
+    - If the VM runs a database, consider using StatefulSet instead of Deployment.
+    - For each Docker container found, create a separate Deployment with matching Service.
+    
+    {provider} VM Instance Data:
+    {json.dumps(vm_data, indent=2)}
+    {docker_summary}
+    
+    IMPORTANT: Pay special attention to the ports field in each container. Use those exact port numbers in your Kubernetes manifests.
+    """
+    try:
+        return client.generate(prompt, instance_name)
+    except RuntimeError as exc:
+        hint = " Hint: verify the model name with --model, or set GEMINI_MODEL/GEMINI_MODEL_FALLBACKS." if "NOT_FOUND" in str(exc) else ""
+        raise RuntimeError(str(exc) + hint) from exc
 
 
 def _is_secret_value(value: str) -> bool:
@@ -1267,8 +1480,7 @@ def save_yaml_files(
     namespace: str,
     extra_docs: list[dict] | None = None,
 ):
-    # Parse YAML directly (no need to clean AI output anymore)
-    cleaned_output = yaml_output
+    cleaned_output = clean_yaml_output(yaml_output)
 
     parsed_docs: list[dict] = []
     if cleaned_output:
@@ -1721,6 +1933,18 @@ def main():
         dest="selected_containers",
         help="Docker container name/ID to include. Can be repeated. If not provided, all containers are included.",
     )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        help="Gemini model name to use (default: gemini-1.5-flash or value from GEMINI_MODEL env)",
+    )
+    parser.add_argument(
+        "--fallback-model",
+        action="append",
+        dest="fallback_models",
+        help="Optional fallback Gemini model name. Can be repeated."
+             " Also honored: GEMINI_MODEL_FALLBACKS env (comma-separated).",
+    )
     args = parser.parse_args()
 
     # Step 1: Prompt for provider
@@ -1864,10 +2088,34 @@ def main():
         print("[X] Manifest generation cancelled.")
         return
     
-    # AI/Gemini functionality removed - manifests are generated directly
+    # Initialize Gemini client
     args.outdir = args.outdir or "vm"
     namespace_input = (args.namespace or "").strip()
     user_namespace = _to_k8s_name(namespace_input, default=namespace_input or "default") if namespace_input else ""
+
+    fallback_models = list(args.fallback_models or [])
+    env_fallbacks = os.environ.get("GEMINI_MODEL_FALLBACKS")
+    if env_fallbacks:
+        fallback_models.extend(
+            [entry.strip() for entry in env_fallbacks.split(",") if entry.strip()]
+        )
+
+    default_fallbacks = [
+        "gemini-1.5-flash-latest",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "models/gemini-1.5-pro",
+        "gemini-1.0-pro",
+        "models/gemini-1.0-pro",
+        "gemini-pro",
+        "models/gemini-pro",
+    ]
+    for default_candidate in default_fallbacks:
+        if default_candidate not in fallback_models:
+            fallback_models.append(default_candidate)
+
+    gemini_client = configure_gemini(args.model, fallback_models)
 
     base_dir = Path(args.outdir)
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -1958,8 +2206,8 @@ def main():
         print(f"   • Using namespace: {namespace}")
 
         try:
-            yaml_output = generate_manifests_direct(instance_name, vm_data, namespace, provider)
-        except Exception as exc:
+            yaml_output = call_gemini(gemini_client, instance_name, vm_data, namespace, provider)
+        except RuntimeError as exc:
             print(f"[X] Skipping instance {instance_name}: {exc}")
             continue
 

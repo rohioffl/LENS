@@ -2337,7 +2337,7 @@ const Dashboard = () => {
           whileTap={{ scale: 0.98 }}
         >
           <h2>VM → GKE Manifests</h2>
-          <p>Convert VM instances (EC2 or GCP Compute Engine) into Kubernetes manifests based on discovered Docker containers.</p>
+          <p>Convert VM instances (EC2 or GCP Compute Engine) into Kubernetes manifests using Gemini.</p>
           <button onClick={() => setView('vm2gke_manifests')}>Generate Manifests</button>
         </motion.div>
         <motion.div
@@ -2904,7 +2904,8 @@ const Dashboard = () => {
       <fieldset>
         <legend>Manifest Generation</legend>
         <div className="info-callout">
-          Kubernetes manifests are generated directly from discovered Docker containers and VM metadata.
+          Gemini model, fallbacks, and credential settings are controlled via the server <code>.env</code>. Update the backend
+          configuration to change these defaults.
         </div>
         <button onClick={runEcsManifestTask} disabled={!authReady || !ecsClusterName}>
           Generate Kubernetes Manifests
@@ -3125,12 +3126,54 @@ const Dashboard = () => {
                   if (!file) {
                     setVm2gkeGcpServiceKey('');
                     setVm2gkeGcpServiceFileName('');
+                    setVm2gkeGcpProjectError('');
                     return;
                   }
+                  
+                  // Check file size (max 1MB)
+                  if (file.size > 1024 * 1024) {
+                    setVm2gkeGcpProjectError('File is too large. Maximum size is 1MB.');
+                    setVm2gkeGcpServiceKey('');
+                    setVm2gkeGcpServiceFileName('');
+                    return;
+                  }
+                  
+                  // Check if file is empty
+                  if (file.size === 0) {
+                    setVm2gkeGcpProjectError('File is empty. Please select a valid JSON file.');
+                    setVm2gkeGcpServiceKey('');
+                    setVm2gkeGcpServiceFileName('');
+                    return;
+                  }
+                  
                   setVm2gkeGcpServiceFileName(file.name);
+                  setVm2gkeGcpProjectError('');
+                  
                   const reader = new FileReader();
+                  reader.onerror = () => {
+                    setVm2gkeGcpProjectError('Failed to read file. Please try again.');
+                    setVm2gkeGcpServiceKey('');
+                    setVm2gkeGcpServiceFileName('');
+                  };
                   reader.onload = (evt) => {
-                    setVm2gkeGcpServiceKey(evt.target?.result?.toString() || '');
+                    const content = evt.target?.result?.toString() || '';
+                    if (!content.trim()) {
+                      setVm2gkeGcpProjectError('File appears to be empty. Please select a valid JSON file.');
+                      setVm2gkeGcpServiceKey('');
+                      setVm2gkeGcpServiceFileName('');
+                      return;
+                    }
+                    
+                    // Validate JSON before setting
+                    try {
+                      JSON.parse(content);
+                      setVm2gkeGcpServiceKey(content);
+                      setVm2gkeGcpProjectError('');
+                    } catch (err) {
+                      setVm2gkeGcpProjectError(`Invalid JSON: ${err.message}`);
+                      setVm2gkeGcpServiceKey('');
+                      setVm2gkeGcpServiceFileName('');
+                    }
                   };
                   reader.readAsText(file);
                 }}
@@ -3395,7 +3438,8 @@ const Dashboard = () => {
       <fieldset>
         <legend>Manifest Generation</legend>
         <div className="info-callout">
-          Kubernetes manifests are generated directly from discovered Docker containers and VM metadata.
+          Gemini model, fallbacks, and credential settings are controlled via the server <code>.env</code>. Update the backend
+          configuration to change these defaults.
         </div>
         <button
           onClick={runVm2GkeManifestTask}
@@ -3802,12 +3846,54 @@ const Dashboard = () => {
                 setEcrServiceKey('');
                 setEcrServiceFileName('');
                 setEcrProjectOptions([]);
+                setEcrProjectError('');
                 return;
               }
+              
+              // Check file size (max 1MB)
+              if (file.size > 1024 * 1024) {
+                setEcrProjectError('File is too large. Maximum size is 1MB.');
+                setEcrServiceKey('');
+                setEcrServiceFileName('');
+                return;
+              }
+              
+              // Check if file is empty
+              if (file.size === 0) {
+                setEcrProjectError('File is empty. Please select a valid JSON file.');
+                setEcrServiceKey('');
+                setEcrServiceFileName('');
+                return;
+              }
+              
               setEcrServiceFileName(file.name);
+              setEcrProjectError('');
+              
               const reader = new FileReader();
+              reader.onerror = () => {
+                setEcrProjectError('Failed to read file. Please try again.');
+                setEcrServiceKey('');
+                setEcrServiceFileName('');
+              };
               reader.onload = (evt) => {
-                setEcrServiceKey(evt.target?.result?.toString() || '');
+                const content = evt.target?.result?.toString() || '';
+                if (!content.trim()) {
+                  setEcrProjectError('File appears to be empty. Please select a valid JSON file.');
+                  setEcrServiceKey('');
+                  setEcrServiceFileName('');
+                  return;
+                }
+                
+                // Validate JSON before setting
+                try {
+                  JSON.parse(content);
+                  setEcrServiceKey(content);
+                  setEcrProjectError('');
+                } catch (err) {
+                  setEcrProjectError(`Invalid JSON: ${err.message}`);
+                  setEcrServiceKey('');
+                  setEcrServiceFileName('');
+                }
               };
               reader.readAsText(file);
             }}
@@ -3920,12 +4006,54 @@ const Dashboard = () => {
               if (!file) {
                 setGcpAuditServiceKey('');
                 setGcpAuditServiceFileName('');
+                setGcpAuditProjectError('');
                 return;
               }
+              
+              // Check file size (max 1MB)
+              if (file.size > 1024 * 1024) {
+                setGcpAuditProjectError('File is too large. Maximum size is 1MB.');
+                setGcpAuditServiceKey('');
+                setGcpAuditServiceFileName('');
+                return;
+              }
+              
+              // Check if file is empty
+              if (file.size === 0) {
+                setGcpAuditProjectError('File is empty. Please select a valid JSON file.');
+                setGcpAuditServiceKey('');
+                setGcpAuditServiceFileName('');
+                return;
+              }
+              
               setGcpAuditServiceFileName(file.name);
+              setGcpAuditProjectError('');
+              
               const reader = new FileReader();
+              reader.onerror = () => {
+                setGcpAuditProjectError('Failed to read file. Please try again.');
+                setGcpAuditServiceKey('');
+                setGcpAuditServiceFileName('');
+              };
               reader.onload = (evt) => {
-                setGcpAuditServiceKey(evt.target?.result?.toString() || '');
+                const content = evt.target?.result?.toString() || '';
+                if (!content.trim()) {
+                  setGcpAuditProjectError('File appears to be empty. Please select a valid JSON file.');
+                  setGcpAuditServiceKey('');
+                  setGcpAuditServiceFileName('');
+                  return;
+                }
+                
+                // Validate JSON before setting
+                try {
+                  JSON.parse(content);
+                  setGcpAuditServiceKey(content);
+                  setGcpAuditProjectError('');
+                } catch (err) {
+                  setGcpAuditProjectError(`Invalid JSON: ${err.message}`);
+                  setGcpAuditServiceKey('');
+                  setGcpAuditServiceFileName('');
+                }
               };
               reader.readAsText(file);
             }}
