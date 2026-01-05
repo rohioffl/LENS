@@ -20,7 +20,7 @@ SECRET_KEY = os.environ.get(
     "django-insecure-change-this-in-production"
 )
 
-DEBUG = False  # REQUIRED when using ALLOWED_HOSTS = ["*"]
+DEBUG = True # REQUIRED when using ALLOWED_HOSTS = ["*"]
 
 # --------------------------------------------------
 # ALLOWED HOSTS (ALLOW ANY IP / DOMAIN)
