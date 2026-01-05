@@ -18,6 +18,7 @@ class InventoryConfig(AppConfig):
             eks_terraform_task,  # noqa: F401
             ecs_manifest_task,  # noqa: F401
             eks_manifest_task,  # noqa: F401
+            vm2gke_manifest_task,  # noqa: F401
             box_project_task,  # noqa: F401
             classic_vpn_task,  # noqa: F401
             ecr_migration_task,  # noqa: F401

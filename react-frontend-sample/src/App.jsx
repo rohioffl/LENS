@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 
 const debounceDelay = 500;
 
@@ -285,7 +286,7 @@ const filterSubnetsByRegion = (subnets, region) => {
   return (subnets || []).filter((subnet) => (subnet.region || '').toLowerCase() === region.toLowerCase());
 };
 
-const App = () => {
+const Dashboard = () => {
   const [awsAccess, setAwsAccess] = useState('');
   const [awsSecret, setAwsSecret] = useState('');
   const [awsRegion, setAwsRegion] = useState(AWS_REGIONS[0].id);
@@ -448,6 +449,33 @@ const App = () => {
   const [eksManifestLogs, setEksManifestLogs] = useState('');
   const [eksManifestError, setEksManifestError] = useState('');
   const [eksManifestArtifacts, setEksManifestArtifacts] = useState([]);
+  
+  // VM2GKE state
+  const [vm2gkeProvider, setVm2gkeProvider] = useState('aws');
+  const [vm2gkeAwsRegion, setVm2gkeAwsRegion] = useState('');
+  const [vm2gkeGcpProject, setVm2gkeGcpProject] = useState('');
+  const [vm2gkeGcpRegion, setVm2gkeGcpRegion] = useState('');
+  const [vm2gkeGcpServiceKey, setVm2gkeGcpServiceKey] = useState('');
+  const [vm2gkeGcpServiceFileName, setVm2gkeGcpServiceFileName] = useState('');
+  const [vm2gkeGcpProjectOptions, setVm2gkeGcpProjectOptions] = useState([]);
+  const [vm2gkeGcpProjectError, setVm2gkeGcpProjectError] = useState('');
+  const [vm2gkeGcpProjectsLoading, setVm2gkeGcpProjectsLoading] = useState(false);
+  const [vm2gkeInstances, setVm2gkeInstances] = useState([]);
+  const [vm2gkeInstancesLoading, setVm2gkeInstancesLoading] = useState(false);
+  const [vm2gkeInstancesError, setVm2gkeInstancesError] = useState('');
+  const [vm2gkeSelectedInstance, setVm2gkeSelectedInstance] = useState(null);
+  const [vm2gkeDockerDiscoveryInitiated, setVm2gkeDockerDiscoveryInitiated] = useState(false);
+  const [vm2gkeDockerContainers, setVm2gkeDockerContainers] = useState([]);
+  const [vm2gkeSelectedContainers, setVm2gkeSelectedContainers] = useState([]);
+  const [vm2gkeDockerImages, setVm2gkeDockerImages] = useState([]);
+  const [vm2gkeDockerEnvVars, setVm2gkeDockerEnvVars] = useState({});
+  const [vm2gkeDockerLoading, setVm2gkeDockerLoading] = useState(false);
+  const [vm2gkeDockerError, setVm2gkeDockerError] = useState('');
+  const [vm2gkeNamespace, setVm2gkeNamespace] = useState('');
+  const [vm2gkeLogs, setVm2gkeLogs] = useState('');
+  const [vm2gkeError, setVm2gkeError] = useState('');
+  const [vm2gkeArtifacts, setVm2gkeArtifacts] = useState([]);
+  
   const [boxCloud, setBoxCloud] = useState('aws');
   const [boxAwsRegion, setBoxAwsRegion] = useState('ap-south-1');
   const [boxGcpProject, setBoxGcpProject] = useState('');
@@ -474,6 +502,7 @@ const App = () => {
   useArtifactCleanup(ecsManifestArtifacts);
   useArtifactCleanup(eksTfArtifacts);
   useArtifactCleanup(eksManifestArtifacts);
+  useArtifactCleanup(vm2gkeArtifacts);
   useArtifactCleanup(boxArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
@@ -908,6 +937,189 @@ const App = () => {
     }, debounceDelay);
     return () => clearTimeout(timer);
   }, [view, boxCloud]);
+
+  useEffect(() => {
+    if (view !== 'vm2gke_manifests') {
+      setVm2gkeInstances([]);
+      setVm2gkeInstancesError('');
+      setVm2gkeInstancesLoading(false);
+      setVm2gkeSelectedInstance(null);
+      setVm2gkeDockerContainers([]);
+      setVm2gkeDockerImages([]);
+      setVm2gkeDockerEnvVars({});
+      return;
+    }
+    setVm2gkeInstancesLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        let res;
+        if (vm2gkeProvider === 'aws') {
+          if (!awsAccess.trim() || !awsSecret.trim() || !vm2gkeAwsRegion.trim()) {
+            setVm2gkeInstances([]);
+            setVm2gkeInstancesError('');
+            setVm2gkeInstancesLoading(false);
+            return;
+          }
+          res = await postJson('/api/aws/ec2/instances/', {
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+            region: vm2gkeAwsRegion,
+          });
+        } else {
+          if (!vm2gkeGcpServiceKey.trim() || !vm2gkeGcpProject.trim() || !vm2gkeGcpRegion.trim()) {
+            setVm2gkeInstances([]);
+            setVm2gkeInstancesError('');
+            setVm2gkeInstancesLoading(false);
+            return;
+          }
+          res = await postJson('/api/gcp/compute/instances/', {
+            service_key: vm2gkeGcpServiceKey.trim(),
+            project: vm2gkeGcpProject,
+            zone: vm2gkeGcpRegion,
+          });
+        }
+        const items = res.instances || [];
+        setVm2gkeInstances(items);
+        setVm2gkeInstancesError('');
+        // Don't auto-select, let user choose
+      } catch (err) {
+        setVm2gkeInstancesError(err.message || String(err));
+        setVm2gkeInstances([]);
+        setVm2gkeSelectedInstance(null);
+      } finally {
+        setVm2gkeInstancesLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, vm2gkeProvider, awsAccess, awsSecret, vm2gkeAwsRegion, vm2gkeGcpServiceKey, vm2gkeGcpProject, vm2gkeGcpRegion]);
+
+  // Function to fetch Docker containers (called when "Proceed" button is clicked)
+  const fetchDockerContainers = async () => {
+    if (view !== 'vm2gke_manifests' || !vm2gkeSelectedInstance) {
+      return;
+    }
+    
+    // Clear Docker data and start loading
+    setVm2gkeDockerContainers([]);
+    setVm2gkeSelectedContainers([]);
+    setVm2gkeDockerImages([]);
+    setVm2gkeDockerEnvVars({});
+    setVm2gkeDockerError('');
+    setVm2gkeDockerLoading(true);
+    setVm2gkeDockerDiscoveryInitiated(true);
+    
+    try {
+      let res;
+        if (vm2gkeProvider === 'aws') {
+          if (!awsAccess.trim() || !awsSecret.trim() || !vm2gkeAwsRegion.trim()) {
+            setVm2gkeDockerContainers([]);
+            setVm2gkeDockerImages([]);
+            setVm2gkeDockerEnvVars({});
+            setVm2gkeDockerLoading(false);
+            return;
+          }
+          const instance = vm2gkeInstances.find((inst) => inst.name === vm2gkeSelectedInstance);
+          if (!instance) {
+            setVm2gkeDockerContainers([]);
+            setVm2gkeDockerLoading(false);
+            return;
+          }
+          res = await postJson('/api/aws/ec2/docker/', {
+            instance_id: instance.id,
+            region: vm2gkeAwsRegion,
+            access_key: awsAccess.trim(),
+            secret_key: awsSecret.trim(),
+          });
+        } else {
+          if (!vm2gkeGcpServiceKey.trim() || !vm2gkeGcpProject.trim() || !vm2gkeGcpRegion.trim()) {
+            setVm2gkeDockerContainers([]);
+            setVm2gkeDockerImages([]);
+            setVm2gkeDockerEnvVars({});
+            setVm2gkeDockerLoading(false);
+            return;
+          }
+          const instance = vm2gkeInstances.find((inst) => inst.name === vm2gkeSelectedInstance);
+          if (!instance || !instance.zone) {
+            setVm2gkeDockerError('Instance zone information is missing. Please ensure the instance has a valid zone.');
+            setVm2gkeDockerContainers([]);
+            setVm2gkeDockerLoading(false);
+            return;
+          }
+          res = await postJson('/api/gcp/compute/docker/', {
+            instance_name: vm2gkeSelectedInstance,
+            project: vm2gkeGcpProject,
+            zone: instance.zone,
+            service_key: vm2gkeGcpServiceKey.trim(),
+          });
+        }
+        const containers = res.containers || [];
+        setVm2gkeDockerContainers(containers);
+        // Auto-select all containers by default
+        setVm2gkeSelectedContainers(containers.map((c) => c.name));
+        setVm2gkeDockerImages(res.images || []);
+        setVm2gkeDockerEnvVars(res.env_vars || {});
+        setVm2gkeDockerError('');
+    } catch (err) {
+      setVm2gkeDockerError(err.message || String(err));
+      setVm2gkeDockerContainers([]);
+      setVm2gkeSelectedContainers([]);
+      setVm2gkeDockerImages([]);
+      setVm2gkeDockerEnvVars({});
+    } finally {
+      setVm2gkeDockerLoading(false);
+    }
+  };
+
+  // Clear Docker data when instance changes or view changes
+  useEffect(() => {
+    if (view !== 'vm2gke_manifests' || !vm2gkeSelectedInstance) {
+      setVm2gkeDockerContainers([]);
+      setVm2gkeSelectedContainers([]);
+      setVm2gkeDockerImages([]);
+      setVm2gkeDockerEnvVars({});
+      setVm2gkeDockerError('');
+      setVm2gkeDockerLoading(false);
+      setVm2gkeDockerDiscoveryInitiated(false);
+      return;
+    }
+  }, [view, vm2gkeSelectedInstance]);
+
+  useEffect(() => {
+    if (view !== 'vm2gke_manifests' || vm2gkeProvider !== 'gcp') {
+      setVm2gkeGcpProjectOptions([]);
+      setVm2gkeGcpProjectError('');
+      setVm2gkeGcpProjectsLoading(false);
+      return;
+    }
+    if (!vm2gkeGcpServiceKey.trim()) {
+      setVm2gkeGcpProjectOptions([]);
+      setVm2gkeGcpProjectError('');
+      setVm2gkeGcpProjectsLoading(false);
+      setVm2gkeGcpProject('');
+      return;
+    }
+    setVm2gkeGcpProjectsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await postJson('/api/gcp/projects/', {
+          service_key: vm2gkeGcpServiceKey,
+        });
+        const options = res.projects || [];
+        setVm2gkeGcpProjectOptions(options);
+        setVm2gkeGcpProjectError('');
+        const existing = vm2gkeGcpProject && options.some((entry) => entry.project_id === vm2gkeGcpProject) ? vm2gkeGcpProject : '';
+        const preferred = existing || options[0]?.project_id || res.project_id || '';
+        setVm2gkeGcpProject(preferred);
+      } catch (err) {
+        setVm2gkeGcpProjectError(err.message || String(err));
+        setVm2gkeGcpProjectOptions([]);
+        setVm2gkeGcpProject('');
+      } finally {
+        setVm2gkeGcpProjectsLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, vm2gkeProvider, vm2gkeGcpServiceKey]);
 
   useEffect(() => {
     if (!isVpnView) {
@@ -1348,6 +1560,57 @@ const App = () => {
       setEksManifestArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setEksManifestError(err.message || String(err));
+    }
+  };
+
+  const runVm2GkeManifestTask = async () => {
+    setVm2gkeError('');
+    setVm2gkeLogs('Submitting VM → GKE manifest request...\n');
+    setVm2gkeArtifacts([]);
+    
+    if (vm2gkeProvider === 'aws') {
+      if (!authReady || !vm2gkeAwsRegion.trim()) {
+        setVm2gkeError('AWS creds and region are required.');
+        return;
+      }
+    } else {
+      if (!vm2gkeGcpServiceKey.trim() || !vm2gkeGcpProject.trim()) {
+        setVm2gkeError('GCP service account key and project are required.');
+        return;
+      }
+    }
+    
+    if (!vm2gkeSelectedInstance) {
+      setVm2gkeError('Select a VM instance.');
+      return;
+    }
+    
+    try {
+      if (!vm2gkeSelectedContainers.length) {
+        setVm2gkeError('Select at least one Docker container to migrate.');
+        return;
+      }
+      
+      const payload = {
+        provider: vm2gkeProvider,
+        access_key: vm2gkeProvider === 'aws' ? awsAccess.trim() : '',
+        secret_key: vm2gkeProvider === 'aws' ? awsSecret.trim() : '',
+        aws_region: vm2gkeProvider === 'aws' ? vm2gkeAwsRegion : '',
+        gcp_service_key: vm2gkeProvider === 'gcp' ? vm2gkeGcpServiceKey.trim() : '',
+        gcp_project: vm2gkeProvider === 'gcp' ? vm2gkeGcpProject : '',
+        gcp_region: vm2gkeProvider === 'gcp' ? vm2gkeGcpRegion : '',
+        instance: vm2gkeSelectedInstance,
+        selected_containers: vm2gkeSelectedContainers,
+        namespace: vm2gkeNamespace.trim() || undefined,
+      };
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'vm2gke_manifests', data: payload },
+        (message) => setVm2gkeLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setVm2gkeArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setVm2gkeError(err.message || String(err));
     }
   };
 
@@ -1877,89 +2140,243 @@ const App = () => {
 
   const currentInvLogText = invLogs || (invLoading ? 'Inventory is running, waiting for server logs...' : 'Logs will appear here once a run starts.');
 
+  const cardVariants = {
+    hidden: { opacity: 0, y: 20, scale: 0.95 },
+    visible: (i) => ({
+      opacity: 1,
+      y: 0,
+      scale: 1,
+      transition: {
+        delay: i * 0.1,
+        duration: 0.5,
+        ease: "easeOut"
+      }
+    }),
+    hover: {
+      y: -8,
+      scale: 1.02,
+      transition: {
+        duration: 0.3,
+        ease: "easeOut"
+      }
+    }
+  };
+
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.1
+      }
+    }
+  };
+
   return (
-    <div>
-      <h1>Lens Backend Demo</h1>
-      <p>Select an automation task to get started.</p>
+    <div className="dashboard-container">
+      <motion.h1
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+      >
+        Lens Backend Demo
+      </motion.h1>
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.2, duration: 0.6 }}
+        style={{ marginBottom: '2rem', color: '#64748b', fontSize: '1.1rem' }}
+      >
+        Select an automation task to get started.
+      </motion.p>
 
       {view === 'home' && (
-      <div className="card-grid">
-        <div className="task-card">
+      <motion.div
+        className="card-grid"
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+      >
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={0}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>VPC Terraform Toolkit</h2>
           <p>Convert AWS VPCs into GCP VPCs ready Terraform bundles with per-subnet overrides.</p>
           <button onClick={() => setView('terraform')}>Open Toolkit</button>
-          </div>
-        <div className="task-card">
+          </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={1}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>AWS Inventory Export</h2>
           <p>Create XLSX-based resource inventories directly from your browser.</p>
           <button onClick={() => setView('inventory')}>Run Inventory</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={2}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>AWS Standard Security Audit</h2>
           <p>Generate the standard security audit workbook with the same XLSX format and colors.</p>
           <button onClick={() => setView('security_audit')}>Run Audit</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={3}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>GCP Security Audit</h2>
           <p>Generate a GCP security audit workbook from your service account JSON key.</p>
           <button onClick={() => setView('gcp_security_audit')}>Run Audit</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={4}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>AWS TCO Report</h2>
           <p>Upload an AWS billing CSV and generate the TCO XLSX summary.</p>
           <button onClick={() => setView('tco_report')}>Run TCO</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={5}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>HA VPN Builder</h2>
           <p>Design a redundant AWS &lt;-&gt; GCP HA VPN with dual tunnels and BGP routing.</p>
           <button onClick={() => setView('ha_vpn')}>Plan HA VPN</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={6}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>Classic VPN Builder</h2>
           <p>Provision single-tunnel AWS &lt;-&gt; GCP Classic VPN with BGP and IKE version selection.</p>
           <button onClick={() => setView('classic_vpn')}>Plan Classic VPN</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={7}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>ECR to Artifact Registry</h2>
           <p>Migrate all ECR repos to GCP Artifact Registry with parallel pushes and skip existing tags.</p>
           <button onClick={() => setView('ecr_migration')}>Migrate Repos</button>
-          </div>
-        <div className="task-card">
+          </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={8}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>ECS → GKE Terraform</h2>
           <p>Size a regional GKE cluster from ECS services and download Terraform bundles.</p>
           <button onClick={() => setView('ecs_terraform')}>Plan Cluster</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={9}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>{'EKS -> GKE Terraform'}</h2>
           <p>Size a GKE cluster directly from existing EKS nodegroups and download Terraform bundles.</p>
           <button onClick={() => setView('eks_terraform')}>Plan EKS Cluster</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={10}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>ECS → GKE Manifests</h2>
           <p>Convert ECS task definitions into curated Kubernetes manifests using Gemini.</p>
           <button onClick={() => setView('ecs_manifests')}>Generate Manifests</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={11}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>EKS → GKE Manifests</h2>
           <p>Export live EKS workloads and clean them for GKE without Gemini.</p>
           <button onClick={() => setView('eks_manifests')}>Export Manifests</button>
-        </div>
-        <div className="task-card">
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={12}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
+          <h2>VM → GKE Manifests</h2>
+          <p>Convert VM instances (EC2 or GCP Compute Engine) into Kubernetes manifests based on discovered Docker containers.</p>
+          <button onClick={() => setView('vm2gke_manifests')}>Generate Manifests</button>
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={12}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
           <h2>Box Terraform Generator</h2>
           <p>Assemble Terraform modules for popular AWS or GCP services in minutes.</p>
           <button onClick={() => setView('box_project')}>Build Project</button>
-        </div>
-        </div>
+        </motion.div>
+        </motion.div>
       )}
 
       {view !== 'home' && (
-        <div className="view-nav">
-          <button onClick={() => setView('home')}>← Back to task list</button>
-        </div>
+        <motion.div
+          className="view-nav"
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.4 }}
+        >
+          <motion.button
+            onClick={() => setView('home')}
+            whileHover={{ scale: 1.05, x: -2 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            ← Back to task list
+          </motion.button>
+        </motion.div>
       )}
 
       {(['terraform', 'inventory', 'security_audit', 'ha_vpn', 'classic_vpn', 'ecr_migration', 'ecs_terraform', 'eks_terraform', 'ecs_manifests', 'eks_manifests'].includes(view)) && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>AWS Credentials & Region</legend>
         <label>
           AWS Access Key ID
@@ -2085,11 +2502,15 @@ const App = () => {
             </table>
           </div>
         )}
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'terraform' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>GCP Target</legend>
         <label>
           GCP Project ID
@@ -2109,11 +2530,15 @@ const App = () => {
             ))}
           </select>
         </label>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'terraform' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>Terraform Bundle</legend>
         <button onClick={runTerraformTask} disabled={!selectedVpc || !authReady}>Generate Terraform Bundle</button>
         {tfError && <div className="error">{tfError}</div>}
@@ -2127,7 +2552,7 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'ecs_terraform' && (
@@ -2479,8 +2904,7 @@ const App = () => {
       <fieldset>
         <legend>Manifest Generation</legend>
         <div className="info-callout">
-          Gemini model, fallbacks, and credential settings are controlled via the server <code>.env</code>. Update the backend
-          configuration to change these defaults.
+          Kubernetes manifests are generated directly from discovered Docker containers and VM metadata.
         </div>
         <button onClick={runEcsManifestTask} disabled={!authReady || !ecsClusterName}>
           Generate Kubernetes Manifests
@@ -2602,6 +3026,403 @@ const App = () => {
       </>
       )}
 
+      {view === 'vm2gke_manifests' && (
+      <>
+      <fieldset>
+        <legend>Cloud Provider & Configuration</legend>
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600 }}>
+            Cloud Provider
+          </label>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '1rem',
+              padding: '0.5rem',
+              background: '#f1f5f9',
+              borderRadius: '8px',
+              width: 'fit-content'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setVm2gkeProvider('aws')}
+              style={{
+                padding: '0.5rem 1.5rem',
+                borderRadius: '6px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 600,
+                transition: 'all 0.2s',
+                background: vm2gkeProvider === 'aws' ? '#2563eb' : 'transparent',
+                color: vm2gkeProvider === 'aws' ? 'white' : '#64748b',
+                boxShadow: vm2gkeProvider === 'aws' ? '0 2px 4px rgba(37, 99, 235, 0.3)' : 'none'
+              }}
+            >
+              AWS (EC2)
+            </button>
+            <button
+              type="button"
+              onClick={() => setVm2gkeProvider('gcp')}
+              style={{
+                padding: '0.5rem 1.5rem',
+                borderRadius: '6px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 600,
+                transition: 'all 0.2s',
+                background: vm2gkeProvider === 'gcp' ? '#2563eb' : 'transparent',
+                color: vm2gkeProvider === 'gcp' ? 'white' : '#64748b',
+                boxShadow: vm2gkeProvider === 'gcp' ? '0 2px 4px rgba(37, 99, 235, 0.3)' : 'none'
+              }}
+            >
+              GCP (Compute Engine)
+            </button>
+          </div>
+        </div>
+        {vm2gkeProvider === 'aws' ? (
+          <>
+            <label>
+              AWS Access Key ID
+              <input
+                type="text"
+                value={awsAccess}
+                onChange={(e) => setAwsAccess(e.target.value)}
+                placeholder="AKIA..."
+              />
+            </label>
+            <label>
+              AWS Secret Access Key
+              <input
+                type="password"
+                value={awsSecret}
+                onChange={(e) => setAwsSecret(e.target.value)}
+                placeholder="••••"
+              />
+            </label>
+            <label>
+              AWS Region
+              <select value={vm2gkeAwsRegion} onChange={(e) => setVm2gkeAwsRegion(e.target.value)}>
+                <option value="">-- Select region --</option>
+                {AWS_REGIONS.filter((r) => r.id !== 'custom').map((region) => (
+                  <option key={region.id} value={region.id}>
+                    {formatRegionDisplay(region.id, region.label)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : (
+          <>
+            <label>
+              Upload GCP Service Account JSON
+              <input
+                type="file"
+                accept="application/json,.json"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) {
+                    setVm2gkeGcpServiceKey('');
+                    setVm2gkeGcpServiceFileName('');
+                    return;
+                  }
+                  setVm2gkeGcpServiceFileName(file.name);
+                  const reader = new FileReader();
+                  reader.onload = (evt) => {
+                    setVm2gkeGcpServiceKey(evt.target?.result?.toString() || '');
+                  };
+                  reader.readAsText(file);
+                }}
+              />
+            </label>
+            {vm2gkeGcpServiceFileName && (
+              <small className="file-indicator">
+                Loaded: {vm2gkeGcpServiceFileName}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVm2gkeGcpServiceKey('');
+                    setVm2gkeGcpServiceFileName('');
+                    setVm2gkeGcpProjectOptions([]);
+                    setVm2gkeGcpProject('');
+                  }}
+                >
+                  Clear
+                </button>
+              </small>
+            )}
+            {vm2gkeGcpProjectsLoading && <small>Loading GCP projects...</small>}
+            {vm2gkeGcpProjectError && <div className="error">{vm2gkeGcpProjectError}</div>}
+            {vm2gkeGcpProjectOptions.length > 0 ? (
+              <label>
+                GCP Project
+                <select
+                  value={vm2gkeGcpProject}
+                  onChange={(e) => setVm2gkeGcpProject(e.target.value)}
+                >
+                  {vm2gkeGcpProjectOptions.map((project) => (
+                    <option key={project.project_id || project.name} value={project.project_id}>
+                      {project.display_name && project.display_name !== project.project_id
+                        ? `${project.display_name} (${project.project_id})`
+                        : project.project_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              vm2gkeGcpServiceKey.trim() && !vm2gkeGcpProjectsLoading && !vm2gkeGcpProjectError && (
+                <div className="info-callout">No GCP projects detected for this service account.</div>
+              )
+            )}
+            <label>
+              GCP Region
+              <select
+                value={vm2gkeGcpRegion}
+                onChange={(e) => setVm2gkeGcpRegion(e.target.value)}
+              >
+                <option value="">-- Select region --</option>
+                {GCP_REGIONS.map((region) => (
+                  <option key={region.id} value={region.id}>
+                    {region.display}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+      </fieldset>
+      <fieldset>
+        <legend>VM Instance Selection</legend>
+        {vm2gkeInstancesLoading && <small>Loading instances...</small>}
+        {vm2gkeInstancesError && <div className="error">{vm2gkeInstancesError}</div>}
+        {!vm2gkeInstancesLoading && !vm2gkeInstances.length && !vm2gkeInstancesError && (
+          <small>
+            {vm2gkeProvider === 'gcp' 
+              ? 'No instances found in the selected region. Try selecting a different region or verify that instances exist in this region.'
+              : 'No instances found. Configure provider settings above and ensure credentials are valid.'}
+          </small>
+        )}
+        <div className="aws-subnet-selector">
+          <div className="label-row">
+            <label>Select instance to migrate</label>
+          </div>
+          <div className="checkbox-grid">
+            {vm2gkeInstances.map((instance) => {
+              const isRunning = vm2gkeProvider === 'aws' 
+                ? instance.state === 'running'
+                : instance.status === 'RUNNING';
+              const isSelected = vm2gkeSelectedInstance === instance.name;
+              
+              return (
+                <label 
+                  key={instance.id} 
+                  className="checkbox-item"
+                >
+                  <input
+                    type="radio"
+                    name="vm2gke-instance"
+                    checked={isSelected}
+                    onChange={() => {
+                      setVm2gkeSelectedInstance(instance.name);
+                      // Clear Docker data when instance changes
+                      setVm2gkeDockerContainers([]);
+                      setVm2gkeSelectedContainers([]);
+                      setVm2gkeDockerImages([]);
+                      setVm2gkeDockerEnvVars({});
+                      setVm2gkeDockerError('');
+                      setVm2gkeDockerDiscoveryInitiated(false);
+                    }}
+                  />
+                  <span>
+                    {instance.name} ({instance.instance_type || instance.machine_type}) - {isRunning ? '🟢 Running' : '🔴 Stopped'}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </fieldset>
+      {vm2gkeSelectedInstance && !vm2gkeDockerDiscoveryInitiated && (
+        <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+          <button
+            type="button"
+            onClick={fetchDockerContainers}
+            disabled={
+              (vm2gkeProvider === 'aws' && (!authReady || !vm2gkeAwsRegion.trim())) ||
+              (vm2gkeProvider === 'gcp' && (!vm2gkeGcpServiceKey.trim() || !vm2gkeGcpProject.trim() || !vm2gkeGcpRegion.trim()))
+            }
+            style={{
+              padding: '0.75rem 1.5rem',
+              backgroundColor: '#2563eb',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '1rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'background-color 0.2s',
+            }}
+            onMouseOver={(e) => {
+              if (!e.currentTarget.disabled) {
+                e.currentTarget.style.backgroundColor = '#1d4ed8';
+              }
+            }}
+            onMouseOut={(e) => {
+              if (!e.currentTarget.disabled) {
+                e.currentTarget.style.backgroundColor = '#2563eb';
+              }
+            }}
+          >
+            Proceed to Discover Docker Containers
+          </button>
+        </div>
+      )}
+      {vm2gkeSelectedInstance && vm2gkeDockerDiscoveryInitiated && (
+        <fieldset>
+          <legend>Docker Containers on {vm2gkeSelectedInstance}</legend>
+          {vm2gkeDockerLoading && <small>Discovering Docker containers...</small>}
+          {vm2gkeDockerError && <div className="error">{vm2gkeDockerError}</div>}
+          {!vm2gkeDockerLoading && !vm2gkeDockerContainers.length && !vm2gkeDockerError && (
+            <small>No Docker containers found. Docker may not be installed or no containers are running.</small>
+          )}
+          {vm2gkeDockerContainers.length > 0 && (
+            <>
+              <div className="aws-subnet-selector">
+                <div className="label-row">
+                  <label>Select containers to migrate ({vm2gkeSelectedContainers.length} selected)</label>
+                  <div className="pill-actions">
+                    <button
+                      type="button"
+                      onClick={() => setVm2gkeSelectedContainers(vm2gkeDockerContainers.map((c) => c.name))}
+                      disabled={!vm2gkeDockerContainers.length || vm2gkeDockerLoading}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVm2gkeSelectedContainers([])}
+                      disabled={!vm2gkeSelectedContainers.length || vm2gkeDockerLoading}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <div className="checkbox-grid">
+                  {vm2gkeDockerContainers.map((container, idx) => {
+                    const isSelected = vm2gkeSelectedContainers.includes(container.name);
+                    return (
+                      <label key={idx} className="checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={vm2gkeDockerLoading}
+                          onChange={() => {
+                            if (isSelected) {
+                              setVm2gkeSelectedContainers(vm2gkeSelectedContainers.filter((name) => name !== container.name));
+                            } else {
+                              setVm2gkeSelectedContainers([...vm2gkeSelectedContainers, container.name]);
+                            }
+                          }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+                            {container.name || 'unnamed'}
+                          </div>
+                          <div style={{ fontSize: '0.875rem', color: '#64748b' }}>
+                            <div>Image: {container.image || 'unknown'}</div>
+                            <div>Status: {container.status || 'unknown'}</div>
+                            {vm2gkeDockerEnvVars[container.name] && (
+                              <div style={{ marginTop: '0.5rem' }}>
+                                <strong>Environment Variables:</strong>
+                                <div style={{ marginLeft: '1rem', marginTop: '0.25rem' }}>
+                                  {Object.entries(vm2gkeDockerEnvVars[container.name]).slice(0, 5).map(([key, value]) => (
+                                    <div key={key} style={{ fontSize: '0.75rem' }}>
+                                      {key}={String(value).length > 50 ? String(value).substring(0, 47) + '...' : value}
+                                    </div>
+                                  ))}
+                                  {Object.keys(vm2gkeDockerEnvVars[container.name]).length > 5 && (
+                                    <div style={{ fontSize: '0.75rem', fontStyle: 'italic' }}>
+                                      ... and {Object.keys(vm2gkeDockerEnvVars[container.name]).length - 5} more
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+          {vm2gkeDockerImages.length > 0 && (
+            <>
+              <h4>Docker Images ({vm2gkeDockerImages.length})</h4>
+              <div style={{ marginBottom: '1rem' }}>
+                {vm2gkeDockerImages.slice(0, 10).map((image, idx) => (
+                  <div key={idx} style={{ 
+                    padding: '0.5rem', 
+                    marginBottom: '0.25rem', 
+                    background: '#f8fafc', 
+                    borderRadius: '4px',
+                    fontSize: '0.875rem'
+                  }}>
+                    {image.image || 'unknown'}
+                  </div>
+                ))}
+                {vm2gkeDockerImages.length > 10 && (
+                  <small>... and {vm2gkeDockerImages.length - 10} more images</small>
+                )}
+              </div>
+            </>
+          )}
+        </fieldset>
+      )}
+      <fieldset>
+        <legend>Manifest Configuration</legend>
+        <label>
+          Kubernetes Namespace (optional)
+          <input
+            value={vm2gkeNamespace}
+            onChange={(e) => setVm2gkeNamespace(e.target.value)}
+            placeholder="Auto-generated if not specified"
+          />
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Manifest Generation</legend>
+        <div className="info-callout">
+          Kubernetes manifests are generated directly from discovered Docker containers and VM metadata.
+        </div>
+        <button
+          onClick={runVm2GkeManifestTask}
+          disabled={
+            (vm2gkeProvider === 'aws' && (!authReady || !vm2gkeAwsRegion.trim())) ||
+            (vm2gkeProvider === 'gcp' && (!vm2gkeGcpServiceKey.trim() || !vm2gkeGcpProject.trim())) ||
+            !vm2gkeSelectedInstance ||
+            !vm2gkeSelectedContainers.length
+          }
+        >
+          Generate Kubernetes Manifests
+        </button>
+        {vm2gkeError && <div className="error">{vm2gkeError}</div>}
+        <h3>Logs</h3>
+        <pre>{vm2gkeLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {vm2gkeArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
       {view === 'box_project' && (
       <>
       <fieldset>
@@ -2662,7 +3483,11 @@ const App = () => {
         </div>
       </fieldset>
       {!!boxSelectedServices.length && (
-        <fieldset>
+        <motion.fieldset
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
           <legend>Service Parameters</legend>
           <div className="info-callout">
             Provide overrides for each module variable. Leave a field blank to use the default value suggested by box-project.
@@ -2683,7 +3508,7 @@ const App = () => {
               {!boxServiceSchemas[service]?.length && <small>No additional inputs required.</small>}
             </div>
           ))}
-        </fieldset>
+        </motion.fieldset>
       )}
       <fieldset>
         <legend>Generate Terraform</legend>
@@ -2930,7 +3755,11 @@ const App = () => {
       )}
 
       {view === 'ecr_migration' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>ECR to Artifact Registry</legend>
         <div className="aws-subnet-selector">
           <div className="label-row">
@@ -3044,11 +3873,15 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'security_audit' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>Standard Security Audit</legend>
         <div className="info-callout">
           Generates a multi-tab XLSX report with the same formatting and colors as the original sheet template.
@@ -3067,11 +3900,15 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'gcp_security_audit' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>GCP Security Audit</legend>
         <label>
           Upload GCP Service Account JSON
@@ -3149,11 +3986,15 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'tco_report' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>AWS TCO Report</legend>
         <label>
           Upload AWS Billing CSV
@@ -3194,11 +4035,15 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
 
       {view === 'inventory' && (
-      <fieldset>
+      <motion.fieldset
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <legend>Quick AWS Inventory</legend>
         <div className="flex-row">
           <div>
@@ -3287,9 +4132,21 @@ const App = () => {
             </a>
           ))}
         </div>
-      </fieldset>
+      </motion.fieldset>
       )}
     </div>
+  );
+};
+
+const App = () => {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5 }}
+    >
+      <Dashboard />
+    </motion.div>
   );
 };
 

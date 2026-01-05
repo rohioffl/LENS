@@ -6,6 +6,7 @@ import queue
 import sys
 import threading
 import tempfile
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO, TextIOBase
 from pathlib import Path
@@ -656,6 +657,512 @@ def aws_eks_namespaces_api(request):
         return JsonResponse({"error": detail}, status=500)
 
     return JsonResponse({"namespaces": sorted(set(namespaces))})
+
+
+@csrf_exempt
+def aws_ec2_instances_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    region = payload.get("region")
+    if not region:
+        return JsonResponse({"error": "Missing required field 'region'."}, status=400)
+
+    creds = _aws_creds_from_payload(payload)
+    try:
+        ec2 = _boto3_client("ec2", region, creds)
+        paginator = ec2.get_paginator("describe_instances")
+        instances: list[dict] = []
+        for page in paginator.paginate():
+            for reservation in page.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    instance_id = instance.get("InstanceId", "")
+                    instance_name = instance_id
+                    tags = instance.get("Tags", [])
+                    for tag in tags:
+                        if tag.get("Key") == "Name":
+                            instance_name = tag.get("Value", instance_id)
+                            break
+                    instances.append({
+                        "id": instance_id,
+                        "name": instance_name,
+                        "instance_type": instance.get("InstanceType", ""),
+                        "state": instance.get("State", {}).get("Name", ""),
+                        "private_ip": instance.get("PrivateIpAddress", ""),
+                        "public_ip": instance.get("PublicIpAddress", ""),
+                    })
+    except Exception as exc:  # pragma: no cover - runtime guard
+        return JsonResponse({"error": f"Failed to list EC2 instances: {exc}"}, status=500)
+
+    return JsonResponse({"instances": sorted(instances, key=lambda x: x["name"])})
+
+
+@csrf_exempt
+def gcp_compute_instances_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    project = payload.get("project")
+    zone = payload.get("zone")  # Optional
+    service_key = payload.get("service_key")
+    if not project:
+        return JsonResponse({"error": "Missing required field 'project'."}, status=400)
+    if not service_key:
+        return JsonResponse({"error": "Missing required field 'service_key'."}, status=400)
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    
+    # Write service key to temporary file
+    try:
+        try:
+            decoded = base64.b64decode(service_key).decode("utf-8")
+        except Exception:
+            decoded = service_key
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(decoded)
+            env["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+    except Exception as exc:
+        return JsonResponse({"error": f"Failed to process service account key: {exc}"}, status=400)
+
+    try:
+        gcloud_cmd = "gcloud.cmd" if os.name == "nt" else "gcloud"
+        cmd = [
+            gcloud_cmd,
+            "compute",
+            "instances",
+            "list",
+            "--project",
+            project,
+            "--format",
+            "json",
+        ]
+        if zone:
+            # Check if it's a zone (contains a dash and letter at the end like us-central1-a)
+            # or a region (just region name like us-central1)
+            # Zone format: us-central1-a, us-west1-b, etc. (ends with -a, -b, -c, etc.)
+            if "-" in zone and len(zone.split("-")) >= 3 and zone[-1].isalpha() and zone[-2] == "-":
+                # It's a zone (e.g., us-central1-a)
+                cmd.extend(["--zones", zone])
+            else:
+                # It's a region (e.g., us-central1), filter by zone pattern
+                cmd.extend(["--filter", f"zone:{zone}*"])
+        
+        # Activate service account
+        try:
+            activate_cmd = [
+                gcloud_cmd,
+                "auth",
+                "activate-service-account",
+                "--key-file",
+                env["GOOGLE_APPLICATION_CREDENTIALS"],
+                "--quiet",
+            ]
+            subprocess.run(activate_cmd, capture_output=True, env=env, timeout=10)
+        except Exception:
+            pass  # Continue even if activation fails
+        
+        proc = subprocess.run(cmd, text=True, capture_output=True, env=env, timeout=30)
+        
+        # Clean up temp file
+        try:
+            if env["GOOGLE_APPLICATION_CREDENTIALS"] and os.path.exists(env["GOOGLE_APPLICATION_CREDENTIALS"]):
+                os.unlink(env["GOOGLE_APPLICATION_CREDENTIALS"])
+        except Exception:
+            pass
+        
+        if proc.returncode != 0:
+            error_msg = (proc.stderr or proc.stdout or "").strip()
+            return JsonResponse({"error": f"Failed to list GCP instances: {error_msg}"}, status=500)
+        
+        data = json.loads(proc.stdout) if proc.stdout.strip() else []
+        instances = []
+        for instance in data:
+            instances.append({
+                "id": instance.get("id", ""),
+                "name": instance.get("name", ""),
+                "machine_type": instance.get("machineType", "").split("/")[-1] if instance.get("machineType") else "",
+                "status": instance.get("status", ""),
+                "zone": instance.get("zone", "").split("/")[-1] if instance.get("zone") else "",
+            })
+    except FileNotFoundError:
+        return JsonResponse({"error": "gcloud command not found. Please install Google Cloud SDK."}, status=500)
+    except json.JSONDecodeError as exc:
+        return JsonResponse({"error": f"Could not parse gcloud output: {exc}"}, status=500)
+    except Exception as exc:  # pragma: no cover - safety
+        return JsonResponse({"error": f"Failed to list GCP instances: {exc}"}, status=500)
+
+    return JsonResponse({"instances": sorted(instances, key=lambda x: x["name"])})
+
+
+@csrf_exempt
+def gcp_instance_docker_containers_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    project = payload.get("project")
+    instance_name = payload.get("instance_name")
+    zone = payload.get("zone")
+    service_key = payload.get("service_key")
+    if not project or not instance_name or not zone:
+        return JsonResponse({"error": "Missing required fields: project, instance_name, zone."}, status=400)
+    if not service_key:
+        return JsonResponse({"error": "Missing required field 'service_key'."}, status=400)
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    
+    # Write service key to temporary file
+    try:
+        try:
+            decoded = base64.b64decode(service_key).decode("utf-8")
+        except Exception:
+            decoded = service_key
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(decoded)
+            env["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+    except Exception as exc:
+        return JsonResponse({"error": f"Failed to process service account key: {exc}"}, status=400)
+
+    try:
+        gcloud_cmd = "gcloud.cmd" if os.name == "nt" else "gcloud"
+        
+        # Activate service account
+        try:
+            activate_cmd = [
+                gcloud_cmd,
+                "auth",
+                "activate-service-account",
+                "--key-file",
+                env["GOOGLE_APPLICATION_CREDENTIALS"],
+                "--quiet",
+            ]
+            subprocess.run(activate_cmd, capture_output=True, env=env, timeout=10)
+        except Exception:
+            pass
+        
+        # Get running containers
+        docker_ps_cmd = [
+            gcloud_cmd,
+            "compute",
+            "ssh",
+            instance_name,
+            "--project",
+            project,
+            "--zone",
+            zone,
+            "--command",
+            "sudo docker ps --format '{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}'",
+            "--quiet",
+        ]
+        
+        result = subprocess.run(docker_ps_cmd, text=True, capture_output=True, timeout=30, env=env)
+        containers = []
+        if result.returncode == 0 and result.stdout and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                if "|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 4:
+                        containers.append({
+                            "id": parts[0][:12],
+                            "image": parts[1],
+                            "name": parts[2],
+                            "status": parts[3],
+                        })
+        
+        # Get Docker images
+        docker_images_cmd = [
+            gcloud_cmd,
+            "compute",
+            "ssh",
+            instance_name,
+            "--project",
+            project,
+            "--zone",
+            zone,
+            "--command",
+            "sudo docker images --format '{{.Repository}}:{{.Tag}}|{{.ID}}'",
+            "--quiet",
+        ]
+        
+        images = []
+        result = subprocess.run(docker_images_cmd, text=True, capture_output=True, timeout=30, env=env)
+        if result.returncode == 0 and result.stdout and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                if "|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 2:
+                        images.append({
+                            "image": parts[0],
+                            "id": parts[1][:12],
+                        })
+        
+        # Get environment variables from containers
+        env_vars = {}
+        for container in containers:
+            env_cmd = [
+                gcloud_cmd,
+                "compute",
+                "ssh",
+                instance_name,
+                "--project",
+                project,
+                "--zone",
+                zone,
+                "--command",
+                f"sudo docker inspect {container['id']} --format '{{{{range .Config.Env}}}}{{{{.}}}}\\n{{{{end}}}}'",
+                "--quiet",
+            ]
+            
+            try:
+                result = subprocess.run(env_cmd, text=True, capture_output=True, timeout=30, env=env)
+                if result.returncode == 0 and result.stdout and result.stdout.strip():
+                    container_env_vars = {}
+                    for line in result.stdout.strip().splitlines():
+                        if "=" in line:
+                            key, value = line.split("=", 1)
+                            container_env_vars[key] = value
+                    if container_env_vars:
+                        env_vars[container["name"]] = container_env_vars
+            except Exception:
+                pass
+        
+        # Clean up temp file
+        try:
+            if env["GOOGLE_APPLICATION_CREDENTIALS"] and os.path.exists(env["GOOGLE_APPLICATION_CREDENTIALS"]):
+                os.unlink(env["GOOGLE_APPLICATION_CREDENTIALS"])
+        except Exception:
+            pass
+        
+        return JsonResponse({
+            "containers": containers,
+            "images": images,
+            "env_vars": env_vars,
+        })
+    except FileNotFoundError:
+        return JsonResponse({"error": "gcloud command not found. Please install Google Cloud SDK."}, status=500)
+    except subprocess.TimeoutExpired:
+        return JsonResponse({"error": "SSH connection timeout"}, status=500)
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else str(exc)
+        if "not found" in stderr.lower() or "does not exist" in stderr.lower():
+            return JsonResponse({"error": "Instance not found or SSH access denied"}, status=500)
+        elif "permission denied" in stderr.lower() or "permission" in stderr.lower():
+            return JsonResponse({"error": "Permission denied accessing Docker (may need sudo or Docker group membership)"}, status=500)
+        else:
+            return JsonResponse({"error": f"Could not SSH to instance or Docker not installed: {stderr}"}, status=500)
+    except Exception as exc:  # pragma: no cover - safety
+        return JsonResponse({"error": f"Failed to get Docker containers: {exc}"}, status=500)
+
+
+@csrf_exempt
+def aws_instance_docker_containers_api(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
+
+    instance_id = payload.get("instance_id")
+    region = payload.get("region")
+    access_key = payload.get("access_key")
+    secret_key = payload.get("secret_key")
+    if not instance_id or not region:
+        return JsonResponse({"error": "Missing required fields: instance_id, region."}, status=400)
+    if not access_key or not secret_key:
+        return JsonResponse({"error": "Missing required fields: access_key, secret_key."}, status=400)
+
+    env = os.environ.copy()
+    env.update({
+        "AWS_ACCESS_KEY_ID": access_key,
+        "AWS_SECRET_ACCESS_KEY": secret_key,
+        "AWS_DEFAULT_REGION": region,
+        "AWS_REGION": region,
+        "AWS_PAGER": "",
+    })
+
+    try:
+        # Check if Docker is installed and get running containers
+        docker_ps_cmd = [
+            "aws",
+            "ssm",
+            "send-command",
+            "--instance-ids",
+            instance_id,
+            "--region",
+            region,
+            "--document-name",
+            "AWS-RunShellScript",
+            "--parameters",
+            "commands=['docker ps --format \"{{.ID}}|{{.Image}}|{{.Names}}|{{.Status}}\"']",
+            "--output",
+            "json",
+        ]
+        
+        result = subprocess.run(docker_ps_cmd, text=True, capture_output=True, timeout=30, env=env)
+        if result.returncode != 0:
+            return JsonResponse({"error": "SSM command failed or instance not accessible"}, status=500)
+        
+        command_data = json.loads(result.stdout) if result.stdout else {}
+        command_id = command_data.get("Command", {}).get("CommandId", "")
+        
+        if not command_id:
+            return JsonResponse({"error": "Could not send SSM command"}, status=500)
+        
+        # Wait for command to execute
+        time.sleep(2)
+        
+        # Get command output
+        output_cmd = [
+            "aws",
+            "ssm",
+            "get-command-invocation",
+            "--command-id",
+            command_id,
+            "--instance-id",
+            instance_id,
+            "--region",
+            region,
+            "--output",
+            "json",
+        ]
+        
+        output_result = subprocess.run(output_cmd, text=True, capture_output=True, timeout=30, env=env)
+        invocation = json.loads(output_result.stdout) if output_result.stdout else {}
+        
+        containers = []
+        status = invocation.get("Status", "")
+        if status == "Success":
+            stdout = invocation.get("StandardOutputContent", "").strip()
+            if stdout:
+                for line in stdout.splitlines():
+                    if "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 4:
+                            containers.append({
+                                "id": parts[0][:12],
+                                "image": parts[1],
+                                "name": parts[2],
+                                "status": parts[3],
+                            })
+        else:
+            error_msg = invocation.get("StandardErrorContent", "") or status
+            if "InvalidInstanceId" in error_msg or "not registered" in error_msg.lower():
+                return JsonResponse({"error": "SSM agent not installed or instance not registered with SSM"}, status=500)
+            elif "AccessDenied" in error_msg or "UnauthorizedOperation" in error_msg:
+                return JsonResponse({"error": "Insufficient IAM permissions for SSM (requires ssm:SendCommand)"}, status=500)
+            else:
+                return JsonResponse({"error": f"SSM command failed: {error_msg}"}, status=500)
+        
+        # Get Docker images
+        docker_images_cmd = [
+            "aws",
+            "ssm",
+            "send-command",
+            "--instance-ids",
+            instance_id,
+            "--region",
+            region,
+            "--document-name",
+            "AWS-RunShellScript",
+            "--parameters",
+            "commands=['docker images --format \"{{.Repository}}:{{.Tag}}|{{.ID}}\"']",
+            "--output",
+            "json",
+        ]
+        
+        images = []
+        result = subprocess.run(docker_images_cmd, text=True, capture_output=True, timeout=30, env=env)
+        if result.returncode == 0:
+            command_data = json.loads(result.stdout) if result.stdout else {}
+            command_id = command_data.get("Command", {}).get("CommandId", "")
+            
+            if command_id:
+                time.sleep(2)
+                output_result = subprocess.run(output_cmd, text=True, capture_output=True, timeout=30, env=env)
+                invocation = json.loads(output_result.stdout) if output_result.stdout else {}
+                
+                if invocation.get("Status") == "Success":
+                    stdout = invocation.get("StandardOutputContent", "").strip()
+                    if stdout:
+                        for line in stdout.splitlines():
+                            if "|" in line:
+                                parts = line.split("|")
+                                if len(parts) >= 2:
+                                    images.append({
+                                        "image": parts[0],
+                                        "id": parts[1][:12],
+                                    })
+        
+        # Get environment variables from containers
+        env_vars = {}
+        for container in containers:
+            env_cmd = [
+                "aws",
+                "ssm",
+                "send-command",
+                "--instance-ids",
+                instance_id,
+                "--region",
+                region,
+                "--document-name",
+                "AWS-RunShellScript",
+                "--parameters",
+                f"commands=['docker inspect {container['id']} --format \"{{{{range .Config.Env}}}}{{{{.}}}}\\n{{{{end}}}}\"']",
+                "--output",
+                "json",
+            ]
+            
+            try:
+                result = subprocess.run(env_cmd, text=True, capture_output=True, timeout=30, env=env)
+                if result.returncode == 0:
+                    command_data = json.loads(result.stdout) if result.stdout else {}
+                    command_id = command_data.get("Command", {}).get("CommandId", "")
+                    
+                    if command_id:
+                        time.sleep(2)
+                        output_result = subprocess.run(output_cmd, text=True, capture_output=True, timeout=30, env=env)
+                        invocation = json.loads(output_result.stdout) if output_result.stdout else {}
+                        
+                        if invocation.get("Status") == "Success":
+                            stdout = invocation.get("StandardOutputContent", "").strip()
+                            if stdout:
+                                container_env_vars = {}
+                                for line in stdout.splitlines():
+                                    if "=" in line:
+                                        key, value = line.split("=", 1)
+                                        container_env_vars[key] = value
+                                if container_env_vars:
+                                    env_vars[container["name"]] = container_env_vars
+            except Exception:
+                pass
+        
+        return JsonResponse({
+            "containers": containers,
+            "images": images,
+            "env_vars": env_vars,
+        })
+    except subprocess.CalledProcessError as exc:
+        return JsonResponse({"error": f"Failed to get Docker containers: {exc}"}, status=500)
+    except Exception as exc:  # pragma: no cover - safety
+        return JsonResponse({"error": f"Failed to get Docker containers: {exc}"}, status=500)
 
 
 @csrf_exempt

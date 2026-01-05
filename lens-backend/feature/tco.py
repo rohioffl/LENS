@@ -2628,27 +2628,12 @@ def main() -> None:
         cfg_ws.write_row(2, 0, ["3 Yr", 0.46, "=1-B3"])
         cfg_ws.set_column(1, 1, None, pct_fmt)
 
-        summary.to_excel(writer, index=False, sheet_name="Service Summary")
-        ws = writer.sheets["Service Summary"]
-        ws.set_column(1, 1, None, currency_fmt)
-        format_table(ws, 0, summary, writer.book.add_format({"border": 1}), header_fmt)
-        for idx, width in enumerate(auto_widths(summary)):
-            ws.set_column(idx, idx, width)
-
         if scenario_df is not None:
             scenario_df.to_excel(writer, index=False, sheet_name="Coverage Scenario")
             ws = writer.sheets["Coverage Scenario"]
             ws.set_column(1, 1, None, currency_fmt)
             format_table(ws, 0, scenario_df, writer.book.add_format({"border": 1}), header_fmt)
             for idx, width in enumerate(auto_widths(scenario_df)):
-                ws.set_column(idx, idx, width)
-
-        if commitments_df is not None:
-            commitments_df.to_excel(writer, index=False, sheet_name="Commitments")
-            ws = writer.sheets["Commitments"]
-            ws.set_column(1, 2, None, currency_fmt)
-            format_table(ws, 0, commitments_df, writer.book.add_format({"border": 1}), header_fmt)
-            for idx, width in enumerate(auto_widths(commitments_df)):
                 ws.set_column(idx, idx, width)
 
         if region_tables:

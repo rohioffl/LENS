@@ -470,6 +470,105 @@ class EcsManifestForm(AutomationTaskForm):
         return cleaned
 
 
+class Vm2GkeManifestForm(AutomationTaskForm):
+    provider = forms.ChoiceField(
+        choices=(("aws", "AWS (EC2)"), ("gcp", "GCP (Compute Engine)")),
+        label="Cloud Provider",
+    )
+    # AWS fields
+    access_key = forms.CharField(required=False, label="AWS Access Key ID")
+    secret_key = forms.CharField(required=False, widget=forms.PasswordInput, label="AWS Secret Access Key")
+    aws_region = forms.CharField(required=False, label="AWS Region")
+    # GCP fields
+    gcp_service_key = forms.CharField(required=False, widget=forms.Textarea, label="GCP Service Account JSON/Base64")
+    gcp_project = forms.CharField(required=False, label="GCP Project ID")
+    gcp_region = forms.CharField(required=False, label="GCP Zone/Region", help_text="Zone (e.g., us-central1-a) or region (e.g., us-central1)")
+    # Common fields
+    instance = forms.CharField(required=False, label="Instance ID/Name", help_text="Optional: specific instance to migrate")
+    namespace = forms.CharField(required=False, label="Kubernetes Namespace")
+    instances = forms.JSONField(required=False, label="Selected VM Instances")
+    selected_containers = forms.JSONField(required=False, label="Selected Docker Containers")
+    gemini_model = forms.CharField(required=False, label="Gemini Model")
+    gemini_fallbacks = forms.CharField(required=False, label="Gemini Fallbacks", help_text="Comma-separated list.")
+    gemini_api_key = forms.CharField(required=False, widget=forms.PasswordInput, label="Gemini API Key Override")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "vm2gke_manifests"
+        self._service_key_info: dict | None = None
+
+    def clean_gcp_service_key(self):
+        value = (self.cleaned_data.get("gcp_service_key") or "").strip()
+        if not value:
+            return value
+        info = None
+        try:
+            info = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                decoded = base64.b64decode(value).decode("utf-8")
+                info = json.loads(decoded)
+            except Exception as exc:
+                raise forms.ValidationError("Service key must be valid JSON or base64 encoded JSON.") from exc
+        if not isinstance(info, dict):
+            raise forms.ValidationError("Service key JSON must be an object.")
+        self._service_key_info = info
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        provider = (cleaned.get("provider") or "").lower()
+        if provider not in {"aws", "gcp"}:
+            self.add_error("provider", "Select either AWS or GCP.")
+            return cleaned
+
+        if provider == "aws":
+            required_fields = ["access_key", "secret_key", "aws_region"]
+            for field in required_fields:
+                if not cleaned.get(field):
+                    self.add_error(field, "This field is required for AWS.")
+            cleaned["gcp_project"] = ""
+            cleaned["gcp_region"] = ""
+            cleaned["gcp_service_key"] = ""
+        elif provider == "gcp":
+            if not cleaned.get("gcp_project"):
+                project = (self._service_key_info or {}).get("project_id")
+                if project:
+                    cleaned["gcp_project"] = project
+                else:
+                    self.add_error("gcp_project", "GCP project ID is required.")
+            if not cleaned.get("gcp_service_key"):
+                self.add_error("gcp_service_key", "GCP service account JSON is required.")
+            cleaned["access_key"] = ""
+            cleaned["secret_key"] = ""
+            cleaned["aws_region"] = ""
+
+        instances = cleaned.get("instances")
+        if instances in (None, ""):
+            cleaned["instances"] = []
+        elif isinstance(instances, str):
+            try:
+                cleaned["instances"] = json.loads(instances)
+            except json.JSONDecodeError:
+                self.add_error("instances", "Expected a JSON array.")
+        elif not isinstance(instances, list):
+            self.add_error("instances", "Provide a JSON array.")
+
+        defaults = {
+            "gemini_model": os.environ.get("VM2GKE_MANIFEST_GEMINI_MODEL"),
+            "gemini_fallbacks": os.environ.get("VM2GKE_MANIFEST_GEMINI_FALLBACKS"),
+            "gemini_api_key": os.environ.get("VM2GKE_MANIFEST_GEMINI_API_KEY_OVERRIDE"),
+        }
+        if not cleaned.get("gemini_model") and defaults["gemini_model"]:
+            cleaned["gemini_model"] = defaults["gemini_model"]
+        if not cleaned.get("gemini_fallbacks") and defaults["gemini_fallbacks"]:
+            cleaned["gemini_fallbacks"] = defaults["gemini_fallbacks"]
+        if not cleaned.get("gemini_api_key") and defaults["gemini_api_key"]:
+            cleaned["gemini_api_key"] = defaults["gemini_api_key"]
+
+        return cleaned
+
+
 class AwsSecurityAuditForm(AutomationTaskForm):
     access_key = forms.CharField(label="AWS Access Key ID")
     secret_key = forms.CharField(widget=forms.PasswordInput, label="AWS Secret Access Key")
