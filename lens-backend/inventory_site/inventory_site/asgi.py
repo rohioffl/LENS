@@ -8,6 +8,10 @@ https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
 """
 
 import os
+import sys
+
+# Prevent Python from creating __pycache__ directories
+sys.dont_write_bytecode = True
 
 from django.core.asgi import get_asgi_application
 

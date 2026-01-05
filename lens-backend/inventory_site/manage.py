@@ -3,6 +3,9 @@
 import os
 import sys
 
+# Prevent Python from creating __pycache__ directories
+sys.dont_write_bytecode = True
+
 
 def main():
     """Run administrative tasks."""

@@ -8,6 +8,10 @@ https://docs.djangoproject.com/en/6.0/howto/deployment/wsgi/
 """
 
 import os
+import sys
+
+# Prevent Python from creating __pycache__ directories
+sys.dont_write_bytecode = True
 
 from django.core.wsgi import get_wsgi_application
 
