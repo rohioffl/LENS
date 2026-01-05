@@ -961,7 +961,6 @@ def gcp_instance_docker_containers_api(request):
                 result = subprocess.run(inspect_cmd, text=True, capture_output=True, timeout=30, env=env)
                 if result.returncode == 0 and result.stdout and result.stdout.strip():
                     try:
-                        import json
                         inspect_data = json.loads(result.stdout.strip())
                         # Extract exposed ports
                         exposed_ports = []
