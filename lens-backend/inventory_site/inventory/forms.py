@@ -748,3 +748,36 @@ class BoxProjectForm(AutomationTaskForm):
             self.add_error("service_inputs", "Service inputs must be an object.")
 
         return cleaned
+
+
+class BoxProjectAwsForm(AutomationTaskForm):
+    """Form for AWS Box Project with boto3 integration"""
+    access_key = forms.CharField(required=False, label="AWS Access Key ID")
+    secret_key = forms.CharField(required=False, widget=forms.PasswordInput, label="AWS Secret Access Key")
+    session_token = forms.CharField(required=False, label="AWS Session Token")
+    aws_region = forms.CharField(label="AWS Region", initial="us-east-1")
+    services = forms.JSONField(label="Selected Services", help_text="List of AWS services to generate Terraform for")
+    service_configs = forms.JSONField(required=False, label="Service Configurations", help_text="Service-specific configuration values")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["task_id"].initial = self.initial.get("task_id") or "box_project_aws"
+
+    def clean(self):
+        cleaned = super().clean()
+        services = cleaned.get("services")
+        if isinstance(services, str):
+            try:
+                services = json.loads(services)
+            except json.JSONDecodeError:
+                self.add_error("services", "Services must be a JSON array.")
+                services = []
+        if not isinstance(services, list) or not services:
+            self.add_error("services", "Select at least one service.")
+            services = []
+        cleaned["services"] = [str(s).strip() for s in services if str(s).strip()]
+        
+        if not cleaned.get("aws_region"):
+            self.add_error("aws_region", "AWS region is required.")
+        
+        return cleaned

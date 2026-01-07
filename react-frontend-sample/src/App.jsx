@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import Chatbot from './components/Chatbot';
 
 const debounceDelay = 500;
 
@@ -243,7 +244,7 @@ const INVENTORY_RESOURCE_IDS = [
   'stepfunctions',
   'route53',
   'sns',
-  'lambda',
+  'ebs',
   'glue',
   'efs',
   'amplify',
@@ -489,6 +490,42 @@ const Dashboard = () => {
   const [boxArtifacts, setBoxArtifacts] = useState([]);
   const [boxLogs, setBoxLogs] = useState('');
   const [boxError, setBoxError] = useState('');
+  
+  // AWS Box Project with boto3 integration
+  const [boxAwsRegions, setBoxAwsRegions] = useState([]);
+  const [boxAwsRegionsLoading, setBoxAwsRegionsLoading] = useState(false);
+  const [boxAwsRegionsError, setBoxAwsRegionsError] = useState('');
+  const [boxAwsSelectedRegion, setBoxAwsSelectedRegion] = useState('us-east-1');
+  const [boxAwsSelectedServices, setBoxAwsSelectedServices] = useState([]);
+  const [boxAwsServiceConfigs, setBoxAwsServiceConfigs] = useState({});
+  const [boxAwsEc2Data, setBoxAwsEc2Data] = useState({ amis: [], instance_types: [], instance_type_details: [] });
+  const [boxAwsEc2DataLoading, setBoxAwsEc2DataLoading] = useState(false);
+  const [boxAwsEc2AmiTab, setBoxAwsEc2AmiTab] = useState('quick-start'); // 'quick-start', 'my-amis', 'recents'
+  const [boxAwsEc2InstanceName, setBoxAwsEc2InstanceName] = useState('');
+  const [boxAwsEc2SelectedAmi, setBoxAwsEc2SelectedAmi] = useState(null);
+  const [boxAwsEc2StorageSize, setBoxAwsEc2StorageSize] = useState(8);
+  const [boxAwsEc2StorageType, setBoxAwsEc2StorageType] = useState('gp3');
+  const [boxAwsEc2StorageIops, setBoxAwsEc2StorageIops] = useState(3000);
+  const [boxAwsEc2StorageEncrypted, setBoxAwsEc2StorageEncrypted] = useState(false);
+  const [boxAwsServiceExpanded, setBoxAwsServiceExpanded] = useState({
+    vpc: true,
+    ec2: true,
+    s3: true,
+    rds: true,
+    ebs: true
+  });
+  const [boxAwsEc2KeyPairName, setBoxAwsEc2KeyPairName] = useState('');
+  const [boxAwsEc2KeyPairGenerating, setBoxAwsEc2KeyPairGenerating] = useState(false);
+  const [boxAwsVpcTotalSubnets, setBoxAwsVpcTotalSubnets] = useState(2);
+  const [boxAwsRdsData, setBoxAwsRdsData] = useState({ engines: [], instance_classes: [] });
+  const [boxAwsRdsDataLoading, setBoxAwsRdsDataLoading] = useState(false);
+  const [boxAwsAvailabilityZones, setBoxAwsAvailabilityZones] = useState([]);
+  const [boxAwsAvailabilityZonesLoading, setBoxAwsAvailabilityZonesLoading] = useState(false);
+  const [boxAwsEc2OsType, setBoxAwsEc2OsType] = useState('amazon-linux');
+  const [boxAwsEc2OsVersion, setBoxAwsEc2OsVersion] = useState('2023');
+  const [boxAwsArtifacts, setBoxAwsArtifacts] = useState([]);
+  const [boxAwsLogs, setBoxAwsLogs] = useState('');
+  const [boxAwsError, setBoxAwsError] = useState('');
 
   useArtifactCleanup(tfArtifacts);
   useArtifactCleanup(invArtifacts);
@@ -504,6 +541,7 @@ const Dashboard = () => {
   useArtifactCleanup(eksManifestArtifacts);
   useArtifactCleanup(vm2gkeArtifacts);
   useArtifactCleanup(boxArtifacts);
+  useArtifactCleanup(boxAwsArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
   const authReady = Boolean(awsAccess.trim() && awsSecret.trim() && resolvedRegion);
@@ -887,6 +925,165 @@ const Dashboard = () => {
     }, debounceDelay);
     return () => clearTimeout(timer);
   }, [authReady, awsAccess, awsSecret, resolvedRegion, eksClusterName, view]);
+
+  // Fetch AWS regions for box_project_aws
+  useEffect(() => {
+    if (view !== 'box_project_aws') {
+      setBoxAwsRegions([]);
+      setBoxAwsRegionsLoading(false);
+      setBoxAwsRegionsError('');
+      return;
+    }
+    setBoxAwsRegionsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const payload = {};
+        // Only include credentials if provided (otherwise use environment variables)
+        if (awsAccess.trim() && awsSecret.trim()) {
+          payload.access_key = awsAccess.trim();
+          payload.secret_key = awsSecret.trim();
+        }
+        const res = await postJson('/api/box/aws/regions/', payload);
+        const regions = res.regions || [];
+        setBoxAwsRegions(regions);
+        setBoxAwsRegionsError('');
+        if (regions.length > 0 && !regions.includes(boxAwsSelectedRegion)) {
+          setBoxAwsSelectedRegion(regions[0]);
+        }
+      } catch (err) {
+        setBoxAwsRegionsError(err.message || String(err));
+        setBoxAwsRegions([]);
+      } finally {
+        setBoxAwsRegionsLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, boxAwsSelectedRegion, awsAccess, awsSecret]);
+
+  // Set default version when OS type changes or on initial load
+  useEffect(() => {
+    if (view !== 'box_project_aws' || !boxAwsSelectedServices.includes('ec2')) {
+      return;
+    }
+    const defaultVersions = {
+      'amazon-linux': '2023',
+      'ubuntu': '22.04',
+      'windows': '2022',
+      'rhel': '9',
+      'suse': '15',
+      'debian': '12'
+    };
+    const defaultVersion = defaultVersions[boxAwsEc2OsType] || 'latest';
+    if (!boxAwsEc2OsVersion || (boxAwsEc2OsType === 'amazon-linux' && !['2023', '2022', 'latest'].includes(boxAwsEc2OsVersion)) ||
+        (boxAwsEc2OsType === 'ubuntu' && !['24.04', '22.04', '20.04', 'latest'].includes(boxAwsEc2OsVersion))) {
+      setBoxAwsEc2OsVersion(defaultVersion);
+    }
+  }, [boxAwsEc2OsType, view, boxAwsSelectedServices]);
+
+  // Fetch EC2 data (AMIs and instance types) for box_project_aws
+  useEffect(() => {
+    if (view !== 'box_project_aws' || !boxAwsSelectedRegion.trim() || !boxAwsSelectedServices.includes('ec2')) {
+      setBoxAwsEc2Data({ amis: [], instance_types: [], instance_type_details: [] });
+      setBoxAwsEc2DataLoading(false);
+      return;
+    }
+    setBoxAwsEc2DataLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        // Only fetch if version is selected
+        if (!boxAwsEc2OsVersion) {
+          setBoxAwsEc2Data({ amis: [], instance_types: [], instance_type_details: [] });
+          setBoxAwsEc2DataLoading(false);
+          return;
+        }
+        const payload = { 
+          region: boxAwsSelectedRegion.trim(), 
+          os_type: boxAwsEc2OsType,
+          os_version: boxAwsEc2OsVersion
+        };
+        // Only include credentials if provided (otherwise use environment variables)
+        if (awsAccess.trim() && awsSecret.trim()) {
+          payload.access_key = awsAccess.trim();
+          payload.secret_key = awsSecret.trim();
+        }
+        const res = await postJson('/api/box/aws/ec2-data/', payload);
+        console.log('EC2 data response:', res);
+        setBoxAwsEc2Data({
+          amis: res.amis || [],
+          instance_types: res.instance_types || [],
+          instance_type_details: res.instance_type_details || [],
+        });
+      } catch (err) {
+        console.error('Failed to fetch EC2 data:', err);
+        setBoxAwsEc2Data({ amis: [], instance_types: [], instance_type_details: [] });
+      } finally {
+        setBoxAwsEc2DataLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [authReady, awsAccess, awsSecret, boxAwsSelectedRegion, boxAwsSelectedServices, boxAwsEc2OsType, boxAwsEc2OsVersion, view]);
+
+  // Fetch RDS data (engines and instance classes) for box_project_aws
+  useEffect(() => {
+    if (view !== 'box_project_aws' || !boxAwsSelectedRegion.trim() || !boxAwsSelectedServices.includes('rds')) {
+      setBoxAwsRdsData({ engines: [], instance_classes: [] });
+      setBoxAwsRdsDataLoading(false);
+      return;
+    }
+    setBoxAwsRdsDataLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const engine = boxAwsServiceConfigs.rds?.engine || 'mysql';
+        const payload = {
+          region: boxAwsSelectedRegion.trim(),
+          engine: engine,
+        };
+        // Only include credentials if provided (otherwise use environment variables)
+        if (awsAccess.trim() && awsSecret.trim()) {
+          payload.access_key = awsAccess.trim();
+          payload.secret_key = awsSecret.trim();
+        }
+        const res = await postJson('/api/box/aws/rds-data/', payload);
+        setBoxAwsRdsData({
+          engines: res.engines || [],
+          instance_classes: res.instance_classes || [],
+        });
+      } catch (err) {
+        setBoxAwsRdsData({ engines: [], instance_classes: [] });
+      } finally {
+        setBoxAwsRdsDataLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [boxAwsSelectedRegion, boxAwsSelectedServices, boxAwsServiceConfigs.rds?.engine, view, awsAccess, awsSecret]);
+
+  // Fetch availability zones for box_project_aws
+  useEffect(() => {
+    if (view !== 'box_project_aws' || !boxAwsSelectedRegion.trim() || !boxAwsSelectedServices.includes('ebs')) {
+      setBoxAwsAvailabilityZones([]);
+      setBoxAwsAvailabilityZonesLoading(false);
+      return;
+    }
+    setBoxAwsAvailabilityZonesLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const payload = { region: boxAwsSelectedRegion.trim() };
+        if (awsAccess.trim() && awsSecret.trim()) {
+          payload.access_key = awsAccess.trim();
+          payload.secret_key = awsSecret.trim();
+        }
+        const res = await postJson('/api/box/aws/availability-zones/', payload);
+        setBoxAwsAvailabilityZones(res.availability_zones || []);
+      } catch (err) {
+        console.error('Failed to fetch availability zones:', err);
+        setBoxAwsAvailabilityZones([]);
+      } finally {
+        setBoxAwsAvailabilityZonesLoading(false);
+      }
+    }, debounceDelay);
+    return () => clearTimeout(timer);
+  }, [view, awsAccess, awsSecret, boxAwsSelectedRegion, boxAwsSelectedServices]);
+
 
   useEffect(() => {
     if (view !== 'box_project') {
@@ -1658,6 +1855,40 @@ const Dashboard = () => {
     }
   };
 
+  const runBoxProjectAwsTask = async () => {
+    setBoxAwsError('');
+    setBoxAwsLogs('Preparing AWS Terraform project with boto3...\n');
+    setBoxAwsArtifacts([]);
+    if (!boxAwsSelectedServices.length) {
+      setBoxAwsError('Select at least one service.');
+      return;
+    }
+    if (!boxAwsSelectedRegion.trim()) {
+      setBoxAwsError('AWS region is required.');
+      return;
+    }
+    const payload = {
+      aws_region: boxAwsSelectedRegion.trim(),
+      services: boxAwsSelectedServices,
+      service_configs: boxAwsServiceConfigs,
+    };
+    // Only include credentials if provided (otherwise use environment variables)
+    if (awsAccess.trim() && awsSecret.trim()) {
+      payload.access_key = awsAccess.trim();
+      payload.secret_key = awsSecret.trim();
+    }
+    try {
+      const event = await runStreamingTask(
+        '/api/tasks/run-stream/',
+        { task_id: 'box_project_aws', data: payload },
+        (message) => setBoxAwsLogs((prev) => mergeBackendLogs(prev, message))
+      );
+      setBoxAwsArtifacts(createDownloadEntries(event.artifacts || []));
+    } catch (err) {
+      setBoxAwsError(err.message || String(err));
+    }
+  };
+
   const appendInvLog = (message) => {
     const line = `[${new Date().toLocaleTimeString()}] ${message}`;
     setInvLogs((prev) => (prev ? `${prev}\n${line}` : line));
@@ -2350,6 +2581,17 @@ const Dashboard = () => {
           <h2>Box Terraform Generator</h2>
           <p>Assemble Terraform modules for popular AWS or GCP services in minutes.</p>
           <button onClick={() => setView('box_project')}>Build Project</button>
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={13}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
+          <h2>Box AWS Terraform Generator</h2>
+          <p>Generate Terraform modules for AWS services using boto3 to fetch real AWS data (AMIs, instance types, etc.).</p>
+          <button onClick={() => setView('box_project_aws')}>Build AWS Project</button>
         </motion.div>
         </motion.div>
       )}
@@ -3467,6 +3709,1541 @@ const Dashboard = () => {
       </>
       )}
 
+      {view === 'box_project_aws' && (
+      <>
+      <fieldset>
+        <legend>AWS Configuration</legend>
+        <div className="info-callout">
+          AWS credentials will be read from environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) if not provided in the AWS Credentials section above.
+        </div>
+        <label>
+          AWS Region
+          <select 
+            value={boxAwsSelectedRegion} 
+            onChange={(e) => {
+              setBoxAwsSelectedRegion(e.target.value);
+              setBoxAwsEc2Data({ amis: [], instance_types: [] });
+              setBoxAwsRdsData({ engines: [], instance_classes: [] });
+              setBoxAwsAvailabilityZones([]);
+            }}
+            disabled={boxAwsRegionsLoading}
+          >
+            {boxAwsRegionsLoading && <option>Loading regions...</option>}
+            {!boxAwsRegionsLoading && boxAwsRegions.length === 0 && <option>No regions available</option>}
+            {boxAwsRegions.map((region) => (
+              <option key={region} value={region}>{region}</option>
+            ))}
+          </select>
+        </label>
+        {boxAwsRegionsError && <div className="error">{boxAwsRegionsError}</div>}
+      </fieldset>
+      <fieldset>
+        <legend>Services</legend>
+        <div className="checkbox-grid">
+          {[
+            { id: 'vpc', label: 'Amazon VPC' },
+            { id: 'ec2', label: 'Amazon EC2' },
+            { id: 's3', label: 'Amazon S3' },
+            { id: 'rds', label: 'Amazon RDS' },
+            { id: 'ebs', label: 'Amazon EBS' },
+          ].map((service) => (
+            <label key={service.id} className="checkbox-item">
+              <input
+                type="checkbox"
+                checked={boxAwsSelectedServices.includes(service.id)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    const newServices = [...boxAwsSelectedServices, service.id];
+                    setBoxAwsSelectedServices(newServices);
+                  } else {
+                    const newServices = boxAwsSelectedServices.filter(s => s !== service.id);
+                    setBoxAwsSelectedServices(newServices);
+                    const newConfigs = { ...boxAwsServiceConfigs };
+                    delete newConfigs[service.id];
+                    setBoxAwsServiceConfigs(newConfigs);
+                  }
+                }}
+              />
+              <span>{service.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      {boxAwsSelectedServices.length > 0 && (
+        <fieldset>
+          <legend>Service Configuration</legend>
+          {/* VPC Configuration */}
+          {boxAwsSelectedServices.includes('vpc') && (
+            <div className="service-input-card">
+              <div style={{ borderBottom: '1px solid #ddd', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>VPC Configuration</h2>
+                  <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    Configure your Virtual Private Cloud with subnets, Internet Gateway, and NAT Gateway.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBoxAwsServiceExpanded({ ...boxAwsServiceExpanded, vpc: !boxAwsServiceExpanded.vpc })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '5px 10px',
+                    fontSize: '18px',
+                    color: '#666',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '30px',
+                    height: '30px'
+                  }}
+                  title={boxAwsServiceExpanded.vpc ? 'Collapse' : 'Expand'}
+                >
+                  <span style={{ 
+                    transform: boxAwsServiceExpanded.vpc ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                    display: 'inline-block'
+                  }}>
+                    ▼
+                  </span>
+                </button>
+              </div>
+              {boxAwsServiceExpanded.vpc && (
+                <div>
+                  <label>
+                    Number of VPCs
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={boxAwsVpcCount}
+                      onChange={(e) => {
+                        const count = parseInt(e.target.value) || 1;
+                        setBoxAwsVpcCount(count);
+                        // Initialize VPCs array if needed
+                        const currentVpcs = boxAwsServiceConfigs.vpc?.vpcs || [];
+                        const newVpcs = [];
+                        for (let i = 0; i < count; i++) {
+                          newVpcs.push(currentVpcs[i] || { name: '', cidr: '10.0.0.0/16', subnets: [] });
+                        }
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          vpc: { ...boxAwsServiceConfigs.vpc, vpcs: newVpcs }
+                        });
+                      }}
+                    />
+                    <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                      Number of VPCs to create (default: 1)
+                    </small>
+                  </label>
+                  {Array.from({ length: boxAwsVpcCount }).map((_, vpcIdx) => {
+                    const vpc = boxAwsServiceConfigs.vpc?.vpcs?.[vpcIdx] || { name: '', cidr: '10.0.0.0/16', subnets: [] };
+                    return (
+                      <div key={vpcIdx} style={{ marginTop: '20px', padding: '15px', border: '2px solid #0073bb', borderRadius: '4px', backgroundColor: '#f0f8ff' }}>
+                        <h4 style={{ margin: '0 0 15px 0', fontSize: '16px', fontWeight: 'bold', color: '#0073bb' }}>
+                          VPC {vpcIdx + 1}
+                        </h4>
+                        <label>
+                          VPC Name
+                          <input
+                            value={vpc.name || ''}
+                            onChange={(e) => {
+                              const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                              while (vpcs.length <= vpcIdx) {
+                                vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                              }
+                              vpcs[vpcIdx] = { ...vpcs[vpcIdx], name: e.target.value };
+                              setBoxAwsServiceConfigs({
+                                ...boxAwsServiceConfigs,
+                                vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                              });
+                            }}
+                            placeholder={`vpc-${vpcIdx + 1}`}
+                          />
+                          <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                            Name for this VPC (e.g., production-vpc, dev-vpc)
+                          </small>
+                        </label>
+                        <label style={{ marginTop: '10px', display: 'block' }}>
+                          VPC CIDR Block
+                          <input
+                            value={vpc.cidr || '10.0.0.0/16'}
+                            onChange={(e) => {
+                              const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                              while (vpcs.length <= vpcIdx) {
+                                vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                              }
+                              vpcs[vpcIdx] = { ...vpcs[vpcIdx], cidr: e.target.value };
+                              setBoxAwsServiceConfigs({
+                                ...boxAwsServiceConfigs,
+                                vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                              });
+                            }}
+                            placeholder="10.0.0.0/16"
+                          />
+                          <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                            Example: 10.0.0.0/16 (provides 65,536 IP addresses)
+                          </small>
+                        </label>
+                        <label style={{ marginTop: '10px', display: 'block' }}>
+                          Total Number of Subnets
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            value={vpc.subnets?.length || boxAwsVpcTotalSubnets}
+                            onChange={(e) => {
+                              const num = parseInt(e.target.value) || 1;
+                              const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                              while (vpcs.length <= vpcIdx) {
+                                vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                              }
+                              const currentSubnets = vpcs[vpcIdx].subnets || [];
+                              const newSubnets = [];
+                              for (let i = 0; i < num; i++) {
+                                newSubnets.push(currentSubnets[i] || { cidr: '', type: 'public', name: '' });
+                              }
+                              vpcs[vpcIdx] = { ...vpcs[vpcIdx], subnets: newSubnets };
+                              setBoxAwsServiceConfigs({
+                                ...boxAwsServiceConfigs,
+                                vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                              });
+                            }}
+                          />
+                        </label>
+                        <div style={{ marginTop: '20px' }}>
+                          <h5 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '10px' }}>Subnet Configuration</h5>
+                          {Array.from({ length: vpc.subnets?.length || boxAwsVpcTotalSubnets }).map((_, idx) => {
+                            const subnet = vpc.subnets?.[idx] || { cidr: '', type: 'public', name: '' };
+                            return (
+                              <div key={idx} style={{ marginBottom: '15px', padding: '15px', border: '1px solid #ddd', borderRadius: '4px' }}>
+                                <h6 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: 'bold' }}>Subnet {idx + 1}</h6>
+                                <label style={{ display: 'block', marginBottom: '10px' }}>
+                                  Subnet Name
+                                  <input
+                                    type="text"
+                                    value={subnet.name || ''}
+                                    onChange={(e) => {
+                                      const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                                      while (vpcs.length <= vpcIdx) {
+                                        vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                                      }
+                                      const subnets = [...(vpcs[vpcIdx].subnets || [])];
+                                      while (subnets.length <= idx) {
+                                        subnets.push({ cidr: '', type: 'public', name: '' });
+                                      }
+                                      subnets[idx] = { ...subnets[idx], name: e.target.value };
+                                      vpcs[vpcIdx] = { ...vpcs[vpcIdx], subnets };
+                                      setBoxAwsServiceConfigs({
+                                        ...boxAwsServiceConfigs,
+                                        vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                                      });
+                                    }}
+                                    placeholder={`subnet-${idx + 1}`}
+                                    style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                                  />
+                                </label>
+                                <label style={{ display: 'block', marginBottom: '10px' }}>
+                                  CIDR Block
+                                  <input
+                                    type="text"
+                                    value={subnet.cidr || ''}
+                                    onChange={(e) => {
+                                      const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                                      while (vpcs.length <= vpcIdx) {
+                                        vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                                      }
+                                      const subnets = [...(vpcs[vpcIdx].subnets || [])];
+                                      while (subnets.length <= idx) {
+                                        subnets.push({ cidr: '', type: 'public', name: '' });
+                                      }
+                                      subnets[idx] = { ...subnets[idx], cidr: e.target.value };
+                                      vpcs[vpcIdx] = { ...vpcs[vpcIdx], subnets };
+                                      setBoxAwsServiceConfigs({
+                                        ...boxAwsServiceConfigs,
+                                        vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                                      });
+                                    }}
+                                    placeholder={`10.${vpcIdx}.${idx + 1}.0/24`}
+                                    style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                                  />
+                                </label>
+                                <label style={{ display: 'block' }}>
+                                  Subnet Type
+                                  <select
+                                    value={subnet.type || 'public'}
+                                    onChange={(e) => {
+                                      const vpcs = [...(boxAwsServiceConfigs.vpc?.vpcs || [])];
+                                      while (vpcs.length <= vpcIdx) {
+                                        vpcs.push({ name: '', cidr: '10.0.0.0/16', subnets: [] });
+                                      }
+                                      const subnets = [...(vpcs[vpcIdx].subnets || [])];
+                                      while (subnets.length <= idx) {
+                                        subnets.push({ cidr: '', type: 'public', name: '' });
+                                      }
+                                      subnets[idx] = { ...subnets[idx], type: e.target.value };
+                                      
+                                      // Auto-enable IGW if there are any public subnets
+                                      const hasPublicSubnets = subnets.some(s => s.type === 'public');
+                                      // Auto-enable NAT Gateway if there are any private subnets
+                                      const hasPrivateSubnets = subnets.some(s => s.type === 'private');
+                                      
+                                      vpcs[vpcIdx] = { 
+                                        ...vpcs[vpcIdx], 
+                                        subnets,
+                                        enable_internet_gateway: hasPublicSubnets,
+                                        enable_nat_gateway: hasPrivateSubnets
+                                      };
+                                      setBoxAwsServiceConfigs({
+                                        ...boxAwsServiceConfigs,
+                                        vpc: { ...boxAwsServiceConfigs.vpc, vpcs }
+                                      });
+                                    }}
+                                    style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                                  >
+                                    <option value="public">Public Subnet (Internet Gateway)</option>
+                                    <option value="private">Private Subnet (NAT Gateway)</option>
+                                  </select>
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f0f8ff', borderRadius: '4px', border: '1px solid #b3d9ff' }}>
+                          <h5 style={{ margin: '0 0 10px 0', fontSize: '14px', fontWeight: 'bold', color: '#0066cc' }}>Gateway Configuration</h5>
+                          <div style={{ fontSize: '14px', color: '#333' }}>
+                            {(() => {
+                              const subnets = vpc.subnets || [];
+                              const hasPublicSubnets = subnets.some(s => s.type === 'public');
+                              const hasPrivateSubnets = subnets.some(s => s.type === 'private');
+                              return (
+                                <>
+                                  {hasPublicSubnets && (
+                                    <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
+                                      <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
+                                      <span><strong>Internet Gateway (IGW)</strong> will be enabled for public subnets</span>
+                                    </div>
+                                  )}
+                                  {hasPrivateSubnets && (
+                                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                                      <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
+                                      <span><strong>NAT Gateway</strong> will be enabled for private subnets</span>
+                                    </div>
+                                  )}
+                                  {!hasPublicSubnets && !hasPrivateSubnets && (
+                                    <div style={{ color: '#666', fontStyle: 'italic' }}>
+                                      Configure subnets above to automatically enable gateways
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <label>
+                    VPC CIDR Block
+                    <input
+                      value={boxAwsServiceConfigs.vpc?.cidr || '10.0.0.0/16'}
+                      onChange={(e) => {
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          vpc: { ...boxAwsServiceConfigs.vpc, cidr: e.target.value }
+                        });
+                      }}
+                      placeholder="10.0.0.0/16"
+                    />
+                    <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                      Example: 10.0.0.0/16 (provides 65,536 IP addresses)
+                    </small>
+                  </label>
+                  <label>
+                    Total Number of Subnets
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={boxAwsVpcTotalSubnets}
+                      onChange={(e) => {
+                        const num = parseInt(e.target.value) || 1;
+                        setBoxAwsVpcTotalSubnets(num);
+                        // Initialize subnets array if needed
+                        const currentSubnets = boxAwsServiceConfigs.vpc?.subnets || [];
+                        const newSubnets = [];
+                        for (let i = 0; i < num; i++) {
+                          newSubnets.push(currentSubnets[i] || { cidr: '', type: 'public', name: '' });
+                        }
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          vpc: { ...boxAwsServiceConfigs.vpc, subnets: newSubnets }
+                        });
+                      }}
+                    />
+                  </label>
+                  <div style={{ marginTop: '20px' }}>
+                    <h5 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '10px' }}>Subnet Configuration</h5>
+                    {Array.from({ length: boxAwsVpcTotalSubnets }).map((_, idx) => {
+                      const subnet = boxAwsServiceConfigs.vpc?.subnets?.[idx] || { cidr: '', type: 'public', name: '' };
+                      return (
+                        <div key={idx} style={{ marginBottom: '15px', padding: '15px', border: '1px solid #ddd', borderRadius: '4px' }}>
+                          <h6 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: 'bold' }}>Subnet {idx + 1}</h6>
+                          <label style={{ display: 'block', marginBottom: '10px' }}>
+                            Subnet Name
+                            <input
+                              type="text"
+                              value={subnet.name || ''}
+                              onChange={(e) => {
+                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
+                                while (subnets.length <= idx) {
+                                  subnets.push({ cidr: '', type: 'public', name: '' });
+                                }
+                                subnets[idx] = { ...subnets[idx], name: e.target.value };
+                                setBoxAwsServiceConfigs({
+                                  ...boxAwsServiceConfigs,
+                                  vpc: { ...boxAwsServiceConfigs.vpc, subnets }
+                                });
+                              }}
+                              placeholder={`subnet-${idx + 1}`}
+                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                            />
+                            <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                              Name for this subnet (e.g., public-subnet-1, private-subnet-1)
+                            </small>
+                          </label>
+                          <label style={{ display: 'block', marginBottom: '10px' }}>
+                            CIDR Block
+                            <input
+                              type="text"
+                              value={subnet.cidr || ''}
+                              onChange={(e) => {
+                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
+                                while (subnets.length <= idx) {
+                                  subnets.push({ cidr: '', type: 'public', name: '' });
+                                }
+                                subnets[idx] = { ...subnets[idx], cidr: e.target.value };
+                                setBoxAwsServiceConfigs({
+                                  ...boxAwsServiceConfigs,
+                                  vpc: { ...boxAwsServiceConfigs.vpc, subnets }
+                                });
+                              }}
+                              placeholder={`10.0.${idx + 1}.0/24`}
+                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                            />
+                            <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                              Example: 10.0.{idx + 1}.0/24 (provides 256 IP addresses)
+                            </small>
+                          </label>
+                          <label style={{ display: 'block' }}>
+                            Subnet Type
+                            <select
+                              value={subnet.type || 'public'}
+                              onChange={(e) => {
+                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
+                                while (subnets.length <= idx) {
+                                  subnets.push({ cidr: '', type: 'public', name: '' });
+                                }
+                                subnets[idx] = { ...subnets[idx], type: e.target.value };
+                                
+                                // Auto-enable IGW if there are any public subnets
+                                const hasPublicSubnets = subnets.some(s => s.type === 'public');
+                                // Auto-enable NAT Gateway if there are any private subnets
+                                const hasPrivateSubnets = subnets.some(s => s.type === 'private');
+                                
+                                setBoxAwsServiceConfigs({
+                                  ...boxAwsServiceConfigs,
+                                  vpc: { 
+                                    ...boxAwsServiceConfigs.vpc, 
+                                    subnets,
+                                    enable_internet_gateway: hasPublicSubnets,
+                                    enable_nat_gateway: hasPrivateSubnets
+                                  }
+                                });
+                              }}
+                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                            >
+                              <option value="public">Public Subnet (Internet Gateway)</option>
+                              <option value="private">Private Subnet (NAT Gateway)</option>
+                            </select>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f0f8ff', borderRadius: '4px', border: '1px solid #b3d9ff' }}>
+                    <h5 style={{ margin: '0 0 10px 0', fontSize: '14px', fontWeight: 'bold', color: '#0066cc' }}>Gateway Configuration</h5>
+                    <div style={{ fontSize: '14px', color: '#333' }}>
+                      {(() => {
+                        const subnets = boxAwsServiceConfigs.vpc?.subnets || [];
+                        const hasPublicSubnets = subnets.some(s => s.type === 'public');
+                        const hasPrivateSubnets = subnets.some(s => s.type === 'private');
+                        return (
+                          <>
+                            {hasPublicSubnets && (
+                              <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
+                                <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
+                                <span><strong>Internet Gateway (IGW)</strong> will be enabled for public subnets</span>
+                              </div>
+                            )}
+                            {hasPrivateSubnets && (
+                              <div style={{ display: 'flex', alignItems: 'center' }}>
+                                <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
+                                <span><strong>NAT Gateway</strong> will be enabled for private subnets</span>
+                              </div>
+                            )}
+                            {!hasPublicSubnets && !hasPrivateSubnets && (
+                              <div style={{ color: '#666', fontStyle: 'italic' }}>
+                                Configure subnets above to automatically enable gateways
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {boxAwsSelectedServices.includes('ec2') && (
+            <div className="service-input-card" style={{ maxWidth: '100%' }}>
+              <div style={{ borderBottom: '1px solid #ddd', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>Launch an instance</h2>
+                  <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    Amazon EC2 allows you to create virtual machines, or instances, that run on the AWS Cloud.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBoxAwsServiceExpanded({ ...boxAwsServiceExpanded, ec2: !boxAwsServiceExpanded.ec2 })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '5px 10px',
+                    fontSize: '18px',
+                    color: '#666',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '30px',
+                    height: '30px'
+                  }}
+                  title={boxAwsServiceExpanded.ec2 ? 'Collapse' : 'Expand'}
+                >
+                  <span style={{ 
+                    transform: boxAwsServiceExpanded.ec2 ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                    display: 'inline-block'
+                  }}>
+                    ▼
+                  </span>
+                </button>
+              </div>
+              
+              {boxAwsServiceExpanded.ec2 && (
+              <div>
+              {/* Name and tags */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                  Name and tags <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info</span>
+                </h3>
+                <label>
+                  Name
+                  <input
+                    type="text"
+                    value={boxAwsEc2InstanceName}
+                    onChange={(e) => {
+                      setBoxAwsEc2InstanceName(e.target.value);
+                      setBoxAwsServiceConfigs({
+                        ...boxAwsServiceConfigs,
+                        ec2: { ...boxAwsServiceConfigs.ec2, name: e.target.value }
+                      });
+                    }}
+                    placeholder="Enter instance name"
+                    style={{ width: '100%', marginTop: '5px' }}
+                  />
+                </label>
+              </div>
+
+              {/* Application and OS Images */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                  Application and OS Images (Amazon Machine Image) <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info</span>
+                </h3>
+                <p style={{ fontSize: '14px', color: '#666', marginBottom: '15px' }}>
+                  An AMI contains the operating system, application server, and applications for your instance.
+                </p>
+                
+                {/* Quick Start Tabs */}
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', borderBottom: '1px solid #ddd', paddingBottom: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setBoxAwsEc2AmiTab('quick-start')}
+                    style={{
+                      padding: '8px 16px',
+                      border: 'none',
+                      background: boxAwsEc2AmiTab === 'quick-start' ? '#0073bb' : 'transparent',
+                      color: boxAwsEc2AmiTab === 'quick-start' ? 'white' : '#0073bb',
+                      cursor: 'pointer',
+                      borderRadius: '4px',
+                      fontWeight: boxAwsEc2AmiTab === 'quick-start' ? 'bold' : 'normal'
+                    }}
+                  >
+                    Quick Start
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBoxAwsEc2AmiTab('my-amis')}
+                    style={{
+                      padding: '8px 16px',
+                      border: 'none',
+                      background: boxAwsEc2AmiTab === 'my-amis' ? '#0073bb' : 'transparent',
+                      color: boxAwsEc2AmiTab === 'my-amis' ? 'white' : '#0073bb',
+                      cursor: 'pointer',
+                      borderRadius: '4px',
+                      fontWeight: boxAwsEc2AmiTab === 'my-amis' ? 'bold' : 'normal'
+                    }}
+                  >
+                    My AMIs
+                  </button>
+                </div>
+
+                {boxAwsEc2AmiTab === 'quick-start' && (
+                  <>
+                    {/* OS Type Selection */}
+                    <div style={{ marginBottom: '15px' }}>
+                      <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Operating System</label>
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                        {['amazon-linux', 'ubuntu', 'windows', 'rhel', 'suse', 'debian'].map((os) => (
+                          <button
+                            key={os}
+                            type="button"
+                            onClick={() => {
+                              setBoxAwsEc2OsType(os);
+                              const defaultVersions = {
+                                'amazon-linux': '2023',
+                                'ubuntu': '22.04',
+                                'windows': '2022',
+                                'rhel': '9',
+                                'suse': '15',
+                                'debian': '12'
+                              };
+                              // Don't auto-set version - let user select to avoid unwanted loading
+                              setBoxAwsEc2OsVersion('');
+                              setBoxAwsEc2Data({ ...boxAwsEc2Data, amis: [] });
+                            }}
+                            style={{
+                              padding: '10px 20px',
+                              border: `2px solid ${boxAwsEc2OsType === os ? '#0073bb' : '#ddd'}`,
+                              background: boxAwsEc2OsType === os ? '#e6f4fa' : 'white',
+                              color: boxAwsEc2OsType === os ? '#0073bb' : '#333',
+                              cursor: 'pointer',
+                              borderRadius: '4px',
+                              fontWeight: boxAwsEc2OsType === os ? 'bold' : 'normal'
+                            }}
+                          >
+                            {os === 'amazon-linux' ? 'Amazon Linux' : 
+                             os === 'ubuntu' ? 'Ubuntu' :
+                             os === 'windows' ? 'Windows' :
+                             os === 'rhel' ? 'Red Hat' :
+                             os === 'suse' ? 'SUSE Linux' : 'Debian'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Version Selection */}
+                    <div style={{ marginBottom: '15px' }}>
+                      <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>Version</label>
+                      <select
+                        value={boxAwsEc2OsVersion || ''}
+                        onChange={(e) => {
+                          setBoxAwsEc2OsVersion(e.target.value);
+                          if (e.target.value) {
+                            setBoxAwsEc2Data({ ...boxAwsEc2Data, amis: [] });
+                          }
+                        }}
+                        style={{ width: '100%', padding: '8px', fontSize: '14px' }}
+                      >
+                        <option value="">Select version...</option>
+                        {boxAwsEc2OsType === 'amazon-linux' && (
+                          <>
+                            <option value="2023">Amazon Linux 2023</option>
+                            <option value="2022">Amazon Linux 2022</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                        {boxAwsEc2OsType === 'ubuntu' && (
+                          <>
+                            <option value="24.04">Ubuntu 24.04 LTS</option>
+                            <option value="22.04">Ubuntu 22.04 LTS</option>
+                            <option value="20.04">Ubuntu 20.04 LTS</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                        {boxAwsEc2OsType === 'windows' && (
+                          <>
+                            <option value="2022">Windows Server 2022</option>
+                            <option value="2019">Windows Server 2019</option>
+                            <option value="2016">Windows Server 2016</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                        {boxAwsEc2OsType === 'rhel' && (
+                          <>
+                            <option value="9">RHEL 9</option>
+                            <option value="8">RHEL 8</option>
+                            <option value="7">RHEL 7</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                        {boxAwsEc2OsType === 'suse' && (
+                          <>
+                            <option value="15">SUSE Linux Enterprise 15</option>
+                            <option value="12">SUSE Linux Enterprise 12</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                        {boxAwsEc2OsType === 'debian' && (
+                          <>
+                            <option value="12">Debian 12</option>
+                            <option value="11">Debian 11</option>
+                            <option value="latest">Latest</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+
+                    {/* AMI Cards */}
+                    {boxAwsEc2DataLoading && <div style={{ padding: '20px', textAlign: 'center' }}>Loading latest AMIs...</div>}
+                    {!boxAwsEc2DataLoading && (boxAwsEc2Data.amis || []).length === 0 && boxAwsSelectedRegion && (
+                      <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                        No AMIs found. Please check your AWS credentials and region.
+                      </div>
+                    )}
+                    {!boxAwsEc2DataLoading && (boxAwsEc2Data.amis || []).length > 0 && (
+                      <div style={{ display: 'grid', gap: '15px' }}>
+                        {(boxAwsEc2Data.amis || []).map((ami) => (
+                          <div
+                            key={ami.id}
+                            onClick={() => {
+                              setBoxAwsEc2SelectedAmi(ami);
+                              setBoxAwsServiceConfigs({
+                                ...boxAwsServiceConfigs,
+                                ec2: { ...boxAwsServiceConfigs.ec2, ami: ami.id }
+                              });
+                            }}
+                            style={{
+                              border: `2px solid ${boxAwsEc2SelectedAmi?.id === ami.id ? '#0073bb' : '#ddd'}`,
+                              borderRadius: '4px',
+                              padding: '15px',
+                              cursor: 'pointer',
+                              background: boxAwsEc2SelectedAmi?.id === ami.id ? '#e6f4fa' : 'white',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                              <div>
+                                <h4 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold' }}>{ami.name}</h4>
+                                <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+                                  <div>AMI ID: {ami.id}</div>
+                                  {ami.description && (
+                                    <div style={{ marginTop: '5px', fontSize: '13px', color: '#333' }}>{ami.description.substring(0, 100)}{ami.description.length > 100 ? '...' : ''}</div>
+                                  )}
+                                </div>
+                              </div>
+                              {boxAwsEc2SelectedAmi?.id === ami.id && (
+                                <span style={{ color: '#0073bb', fontWeight: 'bold' }}>✓ Selected</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {boxAwsEc2AmiTab === 'my-amis' && (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                    My AMIs feature - Coming soon. Use Quick Start for now.
+                  </div>
+                )}
+              </div>
+
+              {/* Instance type */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                  Instance type <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info | Get advice</span>
+                </h3>
+                <label>
+                  Instance type
+                  <select
+                    value={boxAwsServiceConfigs.ec2?.instance_type || ''}
+                    onChange={(e) => {
+                      setBoxAwsServiceConfigs({
+                        ...boxAwsServiceConfigs,
+                        ec2: { ...boxAwsServiceConfigs.ec2, instance_type: e.target.value }
+                      });
+                    }}
+                    disabled={boxAwsEc2DataLoading}
+                    style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '8px' }}
+                  >
+                    <option value="">Select instance type...</option>
+                    {(boxAwsEc2Data.instance_types || []).map((type) => {
+                      const details = (boxAwsEc2Data.instance_type_details || []).find(d => d.instance_type === type);
+                      return (
+                        <option key={type} value={type}>
+                          {type}
+                          {details && ` - ${details.vcpu} vCPU, ${details.memory_gib} GiB Memory`}
+                          {details?.free_tier_eligible && ' (Free tier eligible)'}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                {boxAwsServiceConfigs.ec2?.instance_type && (() => {
+                  const details = (boxAwsEc2Data.instance_type_details || []).find(d => d.instance_type === boxAwsServiceConfigs.ec2?.instance_type);
+                  return details ? (
+                    <div style={{ marginTop: '10px', padding: '10px', background: '#f5f5f5', borderRadius: '4px', fontSize: '14px' }}>
+                      <div><strong>Family:</strong> {details.family}</div>
+                      <div><strong>vCPU:</strong> {details.vcpu}</div>
+                      <div><strong>Memory:</strong> {details.memory_gib} GiB</div>
+                      <div><strong>Current generation:</strong> {details.current_generation ? 'Yes' : 'No'}</div>
+                      {details.free_tier_eligible && <div style={{ color: '#0073bb', fontWeight: 'bold' }}>Free tier eligible</div>}
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+
+              {/* Key pair */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                  Key pair (login) <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info</span>
+                </h3>
+                <p style={{ fontSize: '14px', color: '#666', marginBottom: '10px' }}>
+                  You can use a key pair to securely connect to your instance.
+                </p>
+                <label>
+                  Key pair name - required
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+                    <input
+                      type="text"
+                      value={boxAwsEc2KeyPairName}
+                      onChange={(e) => setBoxAwsEc2KeyPairName(e.target.value)}
+                      placeholder="Enter key pair name (e.g., my-key-pair)"
+                      style={{ flex: 1, padding: '8px', fontSize: '14px' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!boxAwsEc2KeyPairName.trim()) {
+                          alert('Please enter a key pair name');
+                          return;
+                        }
+                        if (!confirm(`Generate and download key pair "${boxAwsEc2KeyPairName.trim()}"?`)) {
+                          return;
+                        }
+                        setBoxAwsEc2KeyPairGenerating(true);
+                        try {
+                          const res = await postJson('/api/box/aws/generate-key-pair/', {
+                            key_name: boxAwsEc2KeyPairName.trim()
+                          });
+                          
+                          if (!res.private_key || !res.public_key) {
+                            throw new Error('Invalid response from server: missing key data');
+                          }
+                          
+                          // Download private key
+                          const blob = new Blob([res.private_key], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `${res.key_name}.pem`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                          
+                          // Store key name and public key in config
+                          setBoxAwsServiceConfigs({
+                            ...boxAwsServiceConfigs,
+                            ec2: {
+                              ...boxAwsServiceConfigs.ec2,
+                              key_name: res.key_name,
+                              public_key: res.public_key
+                            }
+                          });
+                          
+                          alert(`Key pair "${res.key_name}" generated and private key downloaded!`);
+                        } catch (err) {
+                          console.error('Failed to generate key pair:', err);
+                          const errorMessage = err.message || err.toString() || 'Unknown error occurred';
+                          const errorDetails = err.details || err.logs || '';
+                          alert(`Failed to generate key pair: ${errorMessage}${errorDetails ? '\n\nDetails: ' + errorDetails : ''}\n\nPlease check:\n1. Backend server is running\n2. ssh-keygen is installed on the server\n3. Check browser console (F12) for more details`);
+                        } finally {
+                          setBoxAwsEc2KeyPairGenerating(false);
+                        }
+                      }}
+                      disabled={boxAwsEc2KeyPairGenerating || !boxAwsEc2KeyPairName.trim()}
+                      style={{
+                        padding: '8px 16px',
+                        background: '#0073bb',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: boxAwsEc2KeyPairGenerating || !boxAwsEc2KeyPairName.trim() ? 'not-allowed' : 'pointer',
+                        opacity: boxAwsEc2KeyPairGenerating || !boxAwsEc2KeyPairName.trim() ? 0.6 : 1
+                      }}
+                    >
+                      {boxAwsEc2KeyPairGenerating ? 'Generating...' : 'Generate & Download'}
+                    </button>
+                  </div>
+                  {boxAwsServiceConfigs.ec2?.key_name && (
+                    <div style={{ marginTop: '10px', padding: '10px', background: '#e6f4fa', borderRadius: '4px', fontSize: '14px' }}>
+                      ✓ Key pair "{boxAwsServiceConfigs.ec2.key_name}" will be used for this instance
+                    </div>
+                  )}
+                </label>
+              </div>
+
+              {/* Network Settings (VPC and Subnet Selection) */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                  Network Settings <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info</span>
+                </h3>
+                <p style={{ fontSize: '14px', color: '#666', marginBottom: '15px' }}>
+                  Select the VPC and subnet where you want to launch your EC2 instance.
+                </p>
+                {boxAwsSelectedServices.includes('vpc') && boxAwsServiceConfigs.vpc?.vpcs?.length > 0 ? (
+                  <>
+                    <label>
+                      VPC
+                      <select
+                        value={boxAwsServiceConfigs.ec2?.vpc_id || ''}
+                        onChange={(e) => {
+                          setBoxAwsServiceConfigs({
+                            ...boxAwsServiceConfigs,
+                            ec2: { ...boxAwsServiceConfigs.ec2, vpc_id: e.target.value, subnet_id: '' }
+                          });
+                        }}
+                        style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '8px' }}
+                      >
+                        <option value="">Select VPC...</option>
+                        {boxAwsServiceConfigs.vpc.vpcs.map((vpc, vpcIdx) => (
+                          <option key={vpcIdx} value={`vpc-${vpcIdx}`}>
+                            {vpc.name || `VPC ${vpcIdx + 1}`} - {vpc.cidr || 'Not configured'}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {boxAwsServiceConfigs.ec2?.vpc_id && (() => {
+                      const selectedVpcIdx = parseInt(boxAwsServiceConfigs.ec2.vpc_id.replace('vpc-', ''));
+                      const selectedVpc = boxAwsServiceConfigs.vpc?.vpcs?.[selectedVpcIdx];
+                      return selectedVpc ? (
+                        <label style={{ marginTop: '15px', display: 'block' }}>
+                          Subnet
+                          <select
+                            value={boxAwsServiceConfigs.ec2?.subnet_id || ''}
+                            onChange={(e) => {
+                              setBoxAwsServiceConfigs({
+                                ...boxAwsServiceConfigs,
+                                ec2: { ...boxAwsServiceConfigs.ec2, subnet_id: e.target.value }
+                              });
+                            }}
+                            style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '8px' }}
+                          >
+                            <option value="">Select subnet...</option>
+                            {selectedVpc.subnets?.map((subnet, idx) => (
+                              <option key={idx} value={`module.vpc_${selectedVpcIdx}.${subnet.type}_subnet_ids[${idx}]`}>
+                                {subnet.name || `Subnet ${idx + 1}`} - {subnet.cidr || 'Not configured'} ({subnet.type === 'public' ? 'Public' : 'Private'})
+                              </option>
+                            ))}
+                          </select>
+                          <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                            Select a subnet from the selected VPC. Public subnets allow direct internet access.
+                          </small>
+                        </label>
+                      ) : null;
+                    })()}
+                  </>
+                ) : (
+                  <div style={{ padding: '15px', background: '#fff3cd', borderRadius: '4px', border: '1px solid #ffc107' }}>
+                    <strong>No VPCs configured.</strong> Please configure VPCs in the VPC Configuration section above.
+                  </div>
+                )}
+              </div>
+
+              {/* Configure storage */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold' }}>
+                    Configure storage <span style={{ fontSize: '12px', color: '#666', fontWeight: 'normal' }}>Info</span>
+                  </h3>
+                  <button type="button" style={{ padding: '5px 10px', border: '1px solid #ddd', background: 'white', cursor: 'pointer' }}>Advanced</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto auto', gap: '10px', alignItems: 'center', marginBottom: '10px' }}>
+                  <div style={{ fontWeight: 'bold' }}>1x</div>
+                  <input
+                    type="number"
+                    min="8"
+                    value={boxAwsEc2StorageSize}
+                    onChange={(e) => {
+                      setBoxAwsEc2StorageSize(parseInt(e.target.value) || 8);
+                      setBoxAwsServiceConfigs({
+                        ...boxAwsServiceConfigs,
+                        ec2: { ...boxAwsServiceConfigs.ec2, root_volume_size: parseInt(e.target.value) || 8 }
+                      });
+                    }}
+                    style={{ padding: '8px', fontSize: '14px' }}
+                  />
+                  <div>GiB</div>
+                  <select
+                    value={boxAwsEc2StorageType}
+                    onChange={(e) => {
+                      setBoxAwsEc2StorageType(e.target.value);
+                      setBoxAwsServiceConfigs({
+                        ...boxAwsServiceConfigs,
+                        ec2: { ...boxAwsServiceConfigs.ec2, root_volume_type: e.target.value }
+                      });
+                    }}
+                    style={{ padding: '8px', fontSize: '14px' }}
+                  >
+                    <option value="gp3">gp3</option>
+                    <option value="gp2">gp2</option>
+                    <option value="io1">io1</option>
+                    <option value="io2">io2</option>
+                  </select>
+                  <div style={{ fontSize: '14px' }}>
+                    Root volume,
+                    {boxAwsEc2StorageType === 'gp3' && (
+                      <>
+                        <input
+                          type="number"
+                          min="3000"
+                          max="16000"
+                          value={boxAwsEc2StorageIops}
+                          onChange={(e) => {
+                            setBoxAwsEc2StorageIops(parseInt(e.target.value) || 3000);
+                            setBoxAwsServiceConfigs({
+                              ...boxAwsServiceConfigs,
+                              ec2: { ...boxAwsServiceConfigs.ec2, root_volume_iops: parseInt(e.target.value) || 3000 }
+                            });
+                          }}
+                          style={{ width: '60px', padding: '4px', margin: '0 5px' }}
+                        />
+                        IOPS,
+                      </>
+                    )}
+                    <label style={{ marginLeft: '10px', fontSize: '14px' }}>
+                      <input
+                        type="checkbox"
+                        checked={boxAwsEc2StorageEncrypted}
+                        onChange={(e) => {
+                          setBoxAwsEc2StorageEncrypted(e.target.checked);
+                          setBoxAwsServiceConfigs({
+                            ...boxAwsServiceConfigs,
+                            ec2: { ...boxAwsServiceConfigs.ec2, root_volume_encrypted: e.target.checked }
+                          });
+                        }}
+                        style={{ marginRight: '5px' }}
+                      />
+                      {boxAwsEc2StorageEncrypted ? 'Encrypted' : 'Not encrypted'}
+                    </label>
+                  </div>
+                </div>
+                <div style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
+                  Free tier eligible customers can get up to 30 GB of EBS General Purpose (SSD) or Magnetic storage
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Add new volume functionality
+                    alert('Add new volume feature - coming soon');
+                  }}
+                  style={{ marginTop: '10px', padding: '8px 16px', border: '1px solid #ddd', background: 'white', cursor: 'pointer' }}
+                >
+                  Add new volume
+                </button>
+              </div>
+
+              {/* Summary */}
+              <div style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px', background: '#f9f9f9' }}>
+                <h3 style={{ marginTop: 0, fontSize: '16px', fontWeight: 'bold' }}>Summary</h3>
+                <div style={{ fontSize: '14px', lineHeight: '1.8' }}>
+                  <div><strong>Number of instances:</strong> 1</div>
+                  {boxAwsEc2SelectedAmi && (
+                    <div><strong>Software Image (AMI):</strong> {boxAwsEc2SelectedAmi.name} ({boxAwsEc2SelectedAmi.id})</div>
+                  )}
+                  {boxAwsServiceConfigs.ec2?.instance_type && (
+                    <div><strong>Virtual server type (instance type):</strong> {boxAwsServiceConfigs.ec2.instance_type}</div>
+                  )}
+                  <div><strong>Storage (volumes):</strong> 1 volume(s) - {boxAwsEc2StorageSize} GiB</div>
+                </div>
+              </div>
+              </div>
+              )}
+            </div>
+          )}
+          {/* VPC Configuration - removed duplicate, VPC is already shown above */}
+          {boxAwsSelectedServices.includes('s3') && (
+            <div className="service-input-card">
+              <div style={{ borderBottom: '1px solid #ddd', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>S3 Configuration</h2>
+                  <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    Amazon S3 provides object storage with high durability and availability.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBoxAwsServiceExpanded({ ...boxAwsServiceExpanded, s3: !boxAwsServiceExpanded.s3 })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '5px 10px',
+                    fontSize: '18px',
+                    color: '#666',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '30px',
+                    height: '30px'
+                  }}
+                  title={boxAwsServiceExpanded.s3 ? 'Collapse' : 'Expand'}
+                >
+                  <span style={{ 
+                    transform: boxAwsServiceExpanded.s3 ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                    display: 'inline-block'
+                  }}>
+                    ▼
+                  </span>
+                </button>
+              </div>
+              {boxAwsServiceExpanded.s3 && (
+                <div>
+                  <label>
+                    Bucket Name (must be globally unique)
+                    <input
+                      value={boxAwsServiceConfigs.s3?.bucket_name || ''}
+                      onChange={(e) => {
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          s3: { ...boxAwsServiceConfigs.s3, bucket_name: e.target.value }
+                        });
+                      }}
+                      placeholder="my-unique-bucket-name"
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+          {boxAwsSelectedServices.includes('rds') && (
+            <div className="service-input-card">
+              <div style={{ borderBottom: '1px solid #ddd', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>RDS Configuration</h2>
+                  <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    Amazon RDS provides managed relational database services.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBoxAwsServiceExpanded({ ...boxAwsServiceExpanded, rds: !boxAwsServiceExpanded.rds })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '5px 10px',
+                    fontSize: '18px',
+                    color: '#666',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '30px',
+                    height: '30px'
+                  }}
+                  title={boxAwsServiceExpanded.rds ? 'Collapse' : 'Expand'}
+                >
+                  <span style={{ 
+                    transform: boxAwsServiceExpanded.rds ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                    display: 'inline-block'
+                  }}>
+                    ▼
+                  </span>
+                </button>
+              </div>
+              {boxAwsServiceExpanded.rds && (
+                <div>
+              {boxAwsRdsDataLoading && <small>Loading RDS data...</small>}
+              <label>
+                Database Engine
+                <select
+                  value={boxAwsServiceConfigs.rds?.engine || 'mysql'}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, engine: e.target.value, instance_class: '' }
+                    });
+                    setBoxAwsRdsData({ ...boxAwsRdsData, instance_classes: [] });
+                  }}
+                  disabled={boxAwsRdsDataLoading}
+                >
+                  {boxAwsRdsData.engines.map((engine) => (
+                    <option key={engine} value={engine}>{engine}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Instance Class
+                <select
+                  value={boxAwsServiceConfigs.rds?.instance_class || ''}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, instance_class: e.target.value }
+                    });
+                  }}
+                  disabled={boxAwsRdsDataLoading || !boxAwsServiceConfigs.rds?.engine}
+                >
+                  <option value="">Select instance class...</option>
+                  {boxAwsRdsData.instance_classes.map((cls) => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Database Name
+                <input
+                  value={boxAwsServiceConfigs.rds?.db_name || ''}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, db_name: e.target.value }
+                    });
+                  }}
+                  placeholder="mydb"
+                />
+              </label>
+              <label>
+                Master Username
+                <input
+                  value={boxAwsServiceConfigs.rds?.username || 'admin'}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, username: e.target.value }
+                    });
+                  }}
+                />
+              </label>
+              <label>
+                Master Password
+                <input
+                  type="password"
+                  value={boxAwsServiceConfigs.rds?.password || ''}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, password: e.target.value }
+                    });
+                  }}
+                  placeholder="Enter password"
+                />
+              </label>
+              {boxAwsSelectedServices.includes('vpc') && (
+                <>
+                  <h5>VPC & Subnet Configuration</h5>
+                  <div className="info-callout" style={{ marginBottom: '10px', padding: '10px', backgroundColor: '#e6f4fa', borderRadius: '4px' }}>
+                    <strong>Note:</strong> RDS will use subnets from the VPC configuration above. Select private subnets for RDS.
+                  </div>
+                  <label>
+                    Select Subnets (at least 2 for Multi-AZ)
+                    <select
+                      multiple
+                      value={boxAwsServiceConfigs.rds?.subnet_ids || []}
+                      onChange={(e) => {
+                        const selected = Array.from(e.target.selectedOptions, option => option.value);
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          rds: { ...boxAwsServiceConfigs.rds, subnet_ids: selected }
+                        });
+                      }}
+                      style={{ width: '100%', padding: '8px', fontSize: '14px', minHeight: '100px' }}
+                    >
+                      {boxAwsServiceConfigs.vpc?.subnets?.map((subnet, idx) => (
+                        <option key={idx} value={`module.vpc.${subnet.type}_subnet_ids[${idx}]`}>
+                          {subnet.name || `Subnet ${idx + 1}`} - {subnet.cidr || 'Not configured'} ({subnet.type === 'public' ? 'Public' : 'Private'})
+                        </option>
+                      ))}
+                    </select>
+                    <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                      Hold Ctrl/Cmd to select multiple subnets. Private subnets are recommended for RDS.
+                    </small>
+                  </label>
+                </>
+              )}
+              {!boxAwsSelectedServices.includes('vpc') && (
+                <>
+                  <h5>VPC & Subnet Configuration</h5>
+                  <div className="info-callout" style={{ marginBottom: '10px', padding: '10px', backgroundColor: '#fff3cd', borderRadius: '4px' }}>
+                    <strong>Note:</strong> VPC module is not selected. Please specify VPC and subnets manually below.
+                  </div>
+                  <label>
+                    VPC ID
+                    <input
+                      value={boxAwsServiceConfigs.rds?.vpc_id || ''}
+                      onChange={(e) => {
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          rds: { ...boxAwsServiceConfigs.rds, vpc_id: e.target.value }
+                        });
+                      }}
+                      placeholder="vpc-xxxxxxxxx"
+                    />
+                  </label>
+                  <label>
+                    Subnet IDs (comma-separated)
+                    <input
+                      value={Array.isArray(boxAwsServiceConfigs.rds?.subnet_ids) ? boxAwsServiceConfigs.rds.subnet_ids.join(', ') : (boxAwsServiceConfigs.rds?.subnet_ids || '')}
+                      onChange={(e) => {
+                        const subnetIds = e.target.value.split(',').map(s => s.trim()).filter(s => s);
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          rds: { ...boxAwsServiceConfigs.rds, subnet_ids: subnetIds }
+                        });
+                      }}
+                      placeholder="subnet-xxxxx, subnet-yyyyy"
+                    />
+                    <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
+                      Example subnet CIDR blocks: 10.0.1.0/24, 10.0.2.0/24 (for private subnets in different AZs)
+                    </small>
+                  </label>
+                </>
+              )}
+              <label>
+                Allocated Storage (GB)
+                <input
+                  type="number"
+                  min="20"
+                  value={boxAwsServiceConfigs.rds?.allocated_storage || 20}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, allocated_storage: parseInt(e.target.value) || 20 }
+                    });
+                  }}
+                />
+              </label>
+              <label>
+                Storage Type
+                <select
+                  value={boxAwsServiceConfigs.rds?.storage_type || 'gp3'}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, storage_type: e.target.value }
+                    });
+                  }}
+                >
+                  <option value="gp3">General Purpose SSD (gp3)</option>
+                  <option value="gp2">General Purpose SSD (gp2)</option>
+                  <option value="io1">Provisioned IOPS SSD (io1)</option>
+                  <option value="io2">Provisioned IOPS SSD (io2)</option>
+                </select>
+              </label>
+              <label>
+                Backup Retention Period (days)
+                <input
+                  type="number"
+                  min="0"
+                  max="35"
+                  value={boxAwsServiceConfigs.rds?.backup_retention_period || 7}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      rds: { ...boxAwsServiceConfigs.rds, backup_retention_period: parseInt(e.target.value) || 7 }
+                    });
+                  }}
+                />
+              </label>
+                </div>
+              )}
+            </div>
+          )}
+          {boxAwsSelectedServices.includes('ebs') && (
+            <div className="service-input-card">
+              <div style={{ borderBottom: '1px solid #ddd', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>EBS Configuration</h2>
+                  <p style={{ margin: '5px 0 0 0', color: '#666', fontSize: '14px' }}>
+                    Amazon EBS provides persistent block storage volumes for EC2 instances.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBoxAwsServiceExpanded({ ...boxAwsServiceExpanded, ebs: !boxAwsServiceExpanded.ebs })}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '5px 10px',
+                    fontSize: '18px',
+                    color: '#666',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minWidth: '30px',
+                    height: '30px'
+                  }}
+                  title={boxAwsServiceExpanded.ebs ? 'Collapse' : 'Expand'}
+                >
+                  <span style={{ 
+                    transform: boxAwsServiceExpanded.ebs ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                    display: 'inline-block'
+                  }}>
+                    ▼
+                  </span>
+                </button>
+              </div>
+              {boxAwsServiceExpanded.ebs && (
+                <div>
+              {boxAwsAvailabilityZonesLoading && <small>Loading availability zones...</small>}
+              <label>
+                Availability Zone
+                <select
+                  value={boxAwsServiceConfigs.ebs?.availability_zone || ''}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      ebs: { ...boxAwsServiceConfigs.ebs, availability_zone: e.target.value }
+                    });
+                  }}
+                  disabled={boxAwsAvailabilityZonesLoading}
+                >
+                  <option value="">Select availability zone...</option>
+                  {boxAwsAvailabilityZones.map((az) => (
+                    <option key={az} value={az}>{az}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Volume Size (GB)
+                <input
+                  type="number"
+                  min="1"
+                  value={boxAwsServiceConfigs.ebs?.volume_size || 20}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      ebs: { ...boxAwsServiceConfigs.ebs, volume_size: parseInt(e.target.value) || 20 }
+                    });
+                  }}
+                />
+              </label>
+              <label>
+                Volume Type
+                <select
+                  value={boxAwsServiceConfigs.ebs?.volume_type || 'gp3'}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      ebs: { ...boxAwsServiceConfigs.ebs, volume_type: e.target.value }
+                    });
+                  }}
+                >
+                  <option value="gp3">GP3 (General Purpose SSD)</option>
+                  <option value="gp2">GP2 (General Purpose SSD)</option>
+                  <option value="io1">IO1 (Provisioned IOPS SSD)</option>
+                  <option value="io2">IO2 (Provisioned IOPS SSD)</option>
+                  <option value="st1">ST1 (Throughput Optimized HDD)</option>
+                  <option value="sc1">SC1 (Cold HDD)</option>
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={boxAwsServiceConfigs.ebs?.encrypted !== false}
+                  onChange={(e) => {
+                    setBoxAwsServiceConfigs({
+                      ...boxAwsServiceConfigs,
+                      ebs: { ...boxAwsServiceConfigs.ebs, encrypted: e.target.checked }
+                    });
+                  }}
+                />
+                Enable Encryption
+              </label>
+              {boxAwsServiceConfigs.ebs?.volume_type === 'gp3' && (
+                <>
+                  <label>
+                    IOPS (3000-16000)
+                    <input
+                      type="number"
+                      min="3000"
+                      max="16000"
+                      value={boxAwsServiceConfigs.ebs?.iops || 3000}
+                      onChange={(e) => {
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          ebs: { ...boxAwsServiceConfigs.ebs, iops: parseInt(e.target.value) || 3000 }
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Throughput (MiB/s, 125-1000)
+                    <input
+                      type="number"
+                      min="125"
+                      max="1000"
+                      value={boxAwsServiceConfigs.ebs?.throughput || 125}
+                      onChange={(e) => {
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
+                          ebs: { ...boxAwsServiceConfigs.ebs, throughput: parseInt(e.target.value) || 125 }
+                        });
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+                </div>
+              )}
+            </div>
+          )}
+        </fieldset>
+      )}
+      <fieldset>
+        <legend>Generate Terraform</legend>
+        <button 
+          onClick={runBoxProjectAwsTask} 
+          disabled={!boxAwsSelectedServices.length || !boxAwsSelectedRegion.trim()}
+        >
+          Build AWS Terraform Project
+        </button>
+        {boxAwsError && <div className="error">{boxAwsError}</div>}
+        <h3>Logs</h3>
+        <pre>{boxAwsLogs || 'Logs will appear here once a run starts.'}</pre>
+        <h3>Artifacts</h3>
+        <div className="artifacts">
+          {boxAwsArtifacts.map((artifact) => (
+            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
+              Download {artifact.filename}
+            </a>
+          ))}
+        </div>
+      </fieldset>
+      </>
+      )}
+
       {view === 'box_project' && (
       <>
       <fieldset>
@@ -4274,6 +6051,7 @@ const App = () => {
       transition={{ duration: 0.5 }}
     >
       <Dashboard />
+      <Chatbot />
     </motion.div>
   );
 };

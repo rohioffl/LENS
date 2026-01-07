@@ -1339,3 +1339,267 @@ def box_project_metadata_api(request):
     ]
     inputs = box_project.MODULE_INPUTS.get(cloud, {})
     return JsonResponse({"services": services, "inputs": inputs})
+
+
+@csrf_exempt
+def box_project_aws_regions_api(request):
+    """API endpoint to fetch AWS regions using boto3"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    
+    try:
+        payload = json.loads(request.body or "{}")
+        creds = _aws_creds_from_payload(payload)
+        
+        # Configure boto3 - use form data if provided, otherwise use environment variables
+        if creds.get("access_key") and creds.get("secret_key"):
+            os.environ["AWS_ACCESS_KEY_ID"] = creds["access_key"]
+            os.environ["AWS_SECRET_ACCESS_KEY"] = creds["secret_key"]
+            if creds.get("session_token"):
+                os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
+        # If not provided, boto3 will use environment variables automatically
+        
+        # Import box-project-aws functions
+        from pathlib import Path
+        import importlib.util
+        BACKEND_ROOT = Path(__file__).resolve().parents[2]
+        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
+        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
+        box_aws = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(box_aws)
+        
+        regions = box_aws.get_aws_regions()
+        return JsonResponse({"regions": regions})
+    except Exception as exc:
+        return JsonResponse({"error": f"Failed to fetch regions: {exc}"}, status=500)
+
+
+@csrf_exempt
+def box_project_aws_ec2_data_api(request):
+    """API endpoint to fetch EC2 AMIs and instance types"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    
+    try:
+        payload = json.loads(request.body or "{}")
+        region = payload.get("region")
+        if not region:
+            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+        
+        creds = _aws_creds_from_payload(payload)
+        # Configure boto3 - use form data if provided, otherwise use environment variables
+        if creds.get("access_key") and creds.get("secret_key"):
+            os.environ["AWS_ACCESS_KEY_ID"] = creds["access_key"]
+            os.environ["AWS_SECRET_ACCESS_KEY"] = creds["secret_key"]
+            if creds.get("session_token"):
+                os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
+        # If not provided, boto3 will use environment variables automatically
+        
+        # Import box-project-aws functions
+        from pathlib import Path
+        import importlib.util
+        BACKEND_ROOT = Path(__file__).resolve().parents[2]
+        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
+        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
+        box_aws = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(box_aws)
+        
+        os_type = payload.get("os_type")  # Optional OS type filter
+        os_version = payload.get("os_version")  # Optional OS version filter
+        
+        try:
+            amis = box_aws.get_ec2_amis(region, os_type=os_type, os_version=os_version)
+        except Exception as ami_err:
+            print(f"⚠️  Error fetching AMIs: {ami_err}")
+            amis = []
+        
+        try:
+            instance_types = box_aws.get_ec2_instance_types(region)
+        except Exception as it_err:
+            print(f"⚠️  Error fetching instance types: {it_err}")
+            instance_types = []
+        
+        # Get instance type details (vCPU, memory, etc.) - only for common types for faster response
+        instance_type_details = []
+        if instance_types:
+            try:
+                # Get details for common instance types only (limit to 20 for performance)
+                common_types = ["t3.micro", "t3.small", "t3.medium", "t3.large", "t3.xlarge", 
+                              "m5.large", "m5.xlarge", "m5.2xlarge", "c5.large", "c5.xlarge",
+                              "t2.micro", "t2.small", "t2.medium"]
+                types_to_detail = [t for t in common_types if t in instance_types[:100]][:20]
+                if types_to_detail:
+                    instance_type_details = box_aws.get_ec2_instance_type_details(region, types_to_detail)
+            except Exception as detail_err:
+                print(f"⚠️  Error fetching instance type details: {detail_err}")
+                instance_type_details = []
+        
+        # Return only top 5 AMIs (already sorted by creation date in get_ec2_amis)
+        return JsonResponse({
+            "amis": amis[:5] if amis else [],  # Return top 5 latest fresh AMIs for faster loading
+            "instance_types": instance_types[:100] if len(instance_types) > 100 else (instance_types or []),
+            "instance_type_details": instance_type_details
+        })
+    except Exception as exc:
+        import traceback
+        print(f"❌ Error in box_project_aws_ec2_data_api: {exc}")
+        print(traceback.format_exc())
+        return JsonResponse({
+            "error": f"Failed to fetch EC2 data: {exc}",
+            "amis": [],
+            "instance_types": [],
+            "instance_type_details": []
+        }, status=500)
+
+
+@csrf_exempt
+def box_project_aws_rds_data_api(request):
+    """API endpoint to fetch RDS engines and instance classes"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    
+    try:
+        payload = json.loads(request.body or "{}")
+        region = payload.get("region")
+        engine = payload.get("engine", "mysql")
+        if not region:
+            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+        
+        creds = _aws_creds_from_payload(payload)
+        # Configure boto3 - use form data if provided, otherwise use environment variables
+        if creds.get("access_key") and creds.get("secret_key"):
+            os.environ["AWS_ACCESS_KEY_ID"] = creds["access_key"]
+            os.environ["AWS_SECRET_ACCESS_KEY"] = creds["secret_key"]
+            if creds.get("session_token"):
+                os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
+        # If not provided, boto3 will use environment variables automatically
+        
+        # Import box-project-aws functions
+        from pathlib import Path
+        import importlib.util
+        BACKEND_ROOT = Path(__file__).resolve().parents[2]
+        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
+        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
+        box_aws = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(box_aws)
+        
+        engines = box_aws.get_rds_engines(region)
+        instance_classes = box_aws.get_rds_instance_classes(region, engine)
+        
+        return JsonResponse({
+            "engines": engines,
+            "instance_classes": instance_classes[:30] if len(instance_classes) > 30 else instance_classes
+        })
+    except Exception as exc:
+        return JsonResponse({"error": f"Failed to fetch RDS data: {exc}"}, status=500)
+
+
+@csrf_exempt
+def box_project_aws_availability_zones_api(request):
+    """API endpoint to fetch availability zones"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    
+    try:
+        payload = json.loads(request.body or "{}")
+        region = payload.get("region")
+        if not region:
+            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+        
+        creds = _aws_creds_from_payload(payload)
+        # Configure boto3 - use form data if provided, otherwise use environment variables
+        if creds.get("access_key") and creds.get("secret_key"):
+            os.environ["AWS_ACCESS_KEY_ID"] = creds["access_key"]
+            os.environ["AWS_SECRET_ACCESS_KEY"] = creds["secret_key"]
+            if creds.get("session_token"):
+                os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
+        
+        import boto3
+        ec2 = boto3.client("ec2", region_name=region)
+        az_response = ec2.describe_availability_zones()
+        azs = [az["ZoneName"] for az in az_response["AvailabilityZones"]]
+        
+        return JsonResponse({"availability_zones": azs})
+    except Exception as exc:
+        return JsonResponse({"error": f"Failed to fetch availability zones: {exc}"}, status=500)
+
+
+@csrf_exempt
+def box_project_aws_generate_key_pair_api(request):
+    """API endpoint to generate SSH key pair"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is allowed."}, status=405)
+    
+    try:
+        payload = json.loads(request.body or "{}")
+        key_name = payload.get("key_name", "").strip()
+        if not key_name:
+            return JsonResponse({"error": "Key name is required."}, status=400)
+        
+        import subprocess
+        import tempfile
+        import os
+        
+        # Generate SSH key pair using ssh-keygen
+        with tempfile.TemporaryDirectory() as tmpdir:
+            private_key_path = os.path.join(tmpdir, f"{key_name}.pem")
+            public_key_path = os.path.join(tmpdir, f"{key_name}.pub")
+            
+            # Generate key pair
+            # On Windows, try ssh-keygen.exe or use full path
+            import platform
+            ssh_keygen_cmd = "ssh-keygen"
+            result = None
+            if platform.system() == "Windows":
+                # Try common Windows OpenSSH locations
+                possible_paths = [
+                    "ssh-keygen.exe",
+                    "C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe",
+                    "C:\\Program Files\\OpenSSH\\ssh-keygen.exe"
+                ]
+                for path in possible_paths:
+                    try:
+                        result = subprocess.run(
+                            [path, "-t", "rsa", "-b", "4096", "-f", private_key_path, "-N", "", "-q"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            break
+                    except (FileNotFoundError, OSError):
+                        continue
+                if not result or result.returncode != 0:
+                    error_msg = result.stderr if result else "ssh-keygen not found"
+                    return JsonResponse({"error": f"ssh-keygen not found or failed. {error_msg}. Please install OpenSSH for Windows or use WSL."}, status=500)
+            else:
+                result = subprocess.run(
+                    [ssh_keygen_cmd, "-t", "rsa", "-b", "4096", "-f", private_key_path, "-N", "", "-q"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode != 0:
+                    error_msg = result.stderr or result.stdout or "Unknown error"
+                    return JsonResponse({"error": f"Failed to generate key pair: {error_msg}"}, status=500)
+            
+            # Read the keys
+            with open(private_key_path, 'r') as f:
+                private_key = f.read()
+            with open(public_key_path, 'r') as f:
+                public_key = f.read()
+            
+            return JsonResponse({
+                "key_name": key_name,
+                "private_key": private_key,
+                "public_key": public_key
+            })
+    except FileNotFoundError:
+        return JsonResponse({"error": "ssh-keygen not found. Please install OpenSSH."}, status=500)
+    except subprocess.TimeoutExpired:
+        return JsonResponse({"error": "Key generation timed out."}, status=500)
+    except Exception as exc:
+        import traceback
+        print(f"❌ Error generating key pair: {exc}")
+        print(traceback.format_exc())
+        return JsonResponse({"error": f"Failed to generate key pair: {exc}"}, status=500)
