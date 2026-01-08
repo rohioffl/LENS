@@ -7,6 +7,8 @@ from django.utils import timezone
 from inventory.models import ChatConversation, ChatMessage
 from inventory.services.chatbot_service import chatbot_service
 
+INTRO_GREETING = "Hello,"
+
 
 def _strip_redundant_greeting(text: str) -> str:
     import re
@@ -79,6 +81,7 @@ def chat_send_message(request):
     assistant_response = chatbot_service.get_completion(messages)
     assistant_response = _strip_redundant_greeting(assistant_response)
     assistant_response = _drop_greeting_sentences(assistant_response)
+    assistant_response = f"{INTRO_GREETING} {assistant_response}".strip()
     
     # Save assistant message
     ChatMessage.objects.create(
@@ -147,6 +150,12 @@ def chat_send_message_stream(request):
         
         # Stream the response
         full_response = []
+        # Prepend fixed greeting
+        full_response.append(INTRO_GREETING + " ")
+        yield (json.dumps({
+            "type": "chunk",
+            "content": INTRO_GREETING + " "
+        }) + "\n").encode('utf-8')
         first_chunk = True
         for chunk in chatbot_service.get_streaming_completion(messages):
             cleaned_chunk = _strip_redundant_greeting(chunk) if first_chunk else chunk
