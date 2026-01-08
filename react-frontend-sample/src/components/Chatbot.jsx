@@ -160,8 +160,8 @@ export default function Chatbot() {
     }
   };
 
-  const clearHistory = async () => {
-    if (!confirm('Are you sure you want to clear the chat history?')) return;
+  const clearHistory = async (shouldConfirm = true) => {
+    if (shouldConfirm && !confirm('Are you sure you want to clear the chat history?')) return;
 
     try {
       await fetch(`${API_BASE_URL}/api/chat/clear/`, {
@@ -179,12 +179,19 @@ export default function Chatbot() {
     }
   };
 
+  const handleToggle = () => {
+    if (isOpen) {
+      clearHistory(false);
+    }
+    setIsOpen(!isOpen);
+  };
+
   return (
     <>
       {/* Chat Button */}
       <motion.button
         className="chatbot-button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={handleToggle}
         whileHover={{ scale: 1.1 }}
         whileTap={{ scale: 0.9 }}
         animate={{ rotate: isOpen ? 180 : 0 }}
