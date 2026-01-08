@@ -8,7 +8,22 @@ from inventory.models import ChatConversation, ChatMessage
 from inventory.services.chatbot_service import chatbot_service
 
 
-INTRO_GREETING = "Hello, I'm Skyra."
+INTRO_GREETING = "Hello, I'm Skyra. Ready to assist."
+
+
+def _strip_redundant_greeting(text: str) -> str:
+    cleaned = text.lstrip()
+    lowered = cleaned.lower()
+    for prefix in ("okay,", "okay.", "ok,", "ok."):
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix):].lstrip()
+            lowered = cleaned.lower()
+            break
+    for prefix in ("hello,", "hi,", "hey,"):
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix):].lstrip()
+            break
+    return cleaned
 
 
 def _should_add_greeting(conversation: ChatConversation) -> bool:
@@ -57,7 +72,8 @@ def chat_send_message(request):
     # Get AI response
     assistant_response = chatbot_service.get_completion(messages)
     if _should_add_greeting(conversation):
-        assistant_response = f"{INTRO_GREETING}\n{assistant_response}"
+        assistant_response = _strip_redundant_greeting(assistant_response)
+        assistant_response = f"{INTRO_GREETING} {assistant_response}".strip()
     
     # Save assistant message
     ChatMessage.objects.create(
@@ -127,10 +143,10 @@ def chat_send_message_stream(request):
         # Stream the response
         full_response = []
         if _should_add_greeting(conversation):
-            full_response.append(INTRO_GREETING + "\n")
+            full_response.append(INTRO_GREETING + " ")
             yield (json.dumps({
                 "type": "chunk",
-                "content": INTRO_GREETING + "\n"
+                "content": INTRO_GREETING + " "
             }) + "\n").encode('utf-8')
         for chunk in chatbot_service.get_streaming_completion(messages):
             full_response.append(chunk)
