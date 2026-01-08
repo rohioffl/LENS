@@ -8,6 +8,13 @@ from inventory.models import ChatConversation, ChatMessage
 from inventory.services.chatbot_service import chatbot_service
 
 
+INTRO_GREETING = "Hello, I'm Skyra."
+
+
+def _should_add_greeting(conversation: ChatConversation) -> bool:
+    return not conversation.messages.filter(role="assistant").exists()
+
+
 @csrf_exempt
 def chat_send_message(request):
     """API endpoint to send a chat message and get a response"""
@@ -49,6 +56,8 @@ def chat_send_message(request):
     
     # Get AI response
     assistant_response = chatbot_service.get_completion(messages)
+    if _should_add_greeting(conversation):
+        assistant_response = f"{INTRO_GREETING}\n{assistant_response}"
     
     # Save assistant message
     ChatMessage.objects.create(
@@ -117,6 +126,12 @@ def chat_send_message_stream(request):
         
         # Stream the response
         full_response = []
+        if _should_add_greeting(conversation):
+            full_response.append(INTRO_GREETING + "\n")
+            yield (json.dumps({
+                "type": "chunk",
+                "content": INTRO_GREETING + "\n"
+            }) + "\n").encode('utf-8')
         for chunk in chatbot_service.get_streaming_completion(messages):
             full_response.append(chunk)
             yield (json.dumps({
