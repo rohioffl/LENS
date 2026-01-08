@@ -8,31 +8,32 @@ from inventory.models import ChatConversation, ChatMessage
 from inventory.services.chatbot_service import chatbot_service
 
 
-INTRO_GREETING = "Hello, I'm Skyra. Ready to assist."
-
-
 def _strip_redundant_greeting(text: str) -> str:
+    import re
+
     cleaned = text.lstrip()
+    pattern = re.compile(r"^(?:\s*)(hello|hi|hey|ok|okay)[^.!?\n]*[.!?\n]+\s*", re.IGNORECASE)
+    # Remove leading greeting sentences repeatedly
     while True:
-        lowered = cleaned.lower().lstrip()
-        if not lowered:
-            return cleaned
-        sentence_end = None
-        for token in (".", "!", "?", "\n"):
-            idx = cleaned.find(token)
-            if idx != -1 and (sentence_end is None or idx < sentence_end):
-                sentence_end = idx
-        first_sentence = cleaned if sentence_end is None else cleaned[:sentence_end + 1]
-        first_lower = first_sentence.lower()
-        if any(word in first_lower for word in ("hello", "hi", "hey", "okay", "ok")):
-            cleaned = cleaned[len(first_sentence):].lstrip()
-            continue
-        break
+        new_cleaned = pattern.sub("", cleaned)
+        if new_cleaned == cleaned:
+            break
+        cleaned = new_cleaned.lstrip()
     return cleaned
 
 
-def _should_add_greeting(conversation: ChatConversation) -> bool:
-    return not conversation.messages.filter(role="assistant").exists()
+def _drop_greeting_sentences(text: str) -> str:
+    import re
+
+    sentences = re.split(r"(?<=[.!?\n])\s+", text)
+    keep = []
+    for s in sentences:
+        lower = s.lower()
+        if any(word in lower for word in ("hello", "hi ", "hey ", " ok", "okay")):
+            continue
+        if s.strip():
+            keep.append(s.strip())
+    return " ".join(keep).strip()
 
 
 @csrf_exempt
@@ -76,9 +77,8 @@ def chat_send_message(request):
     
     # Get AI response
     assistant_response = chatbot_service.get_completion(messages)
-    if _should_add_greeting(conversation):
-        assistant_response = _strip_redundant_greeting(assistant_response)
-        assistant_response = f"{INTRO_GREETING} {assistant_response}".strip()
+    assistant_response = _strip_redundant_greeting(assistant_response)
+    assistant_response = _drop_greeting_sentences(assistant_response)
     
     # Save assistant message
     ChatMessage.objects.create(
@@ -147,18 +147,18 @@ def chat_send_message_stream(request):
         
         # Stream the response
         full_response = []
-        if _should_add_greeting(conversation):
-            full_response.append(INTRO_GREETING + " ")
-            yield (json.dumps({
-                "type": "chunk",
-                "content": INTRO_GREETING + " "
-            }) + "\n").encode('utf-8')
+        first_chunk = True
         for chunk in chatbot_service.get_streaming_completion(messages):
-            full_response.append(chunk)
-            yield (json.dumps({
-                "type": "chunk",
-                "content": chunk
-            }) + "\n").encode('utf-8')
+            cleaned_chunk = _strip_redundant_greeting(chunk) if first_chunk else chunk
+            if first_chunk:
+                cleaned_chunk = _drop_greeting_sentences(cleaned_chunk)
+            if cleaned_chunk:
+                full_response.append(cleaned_chunk)
+                yield (json.dumps({
+                    "type": "chunk",
+                    "content": cleaned_chunk
+                }) + "\n").encode('utf-8')
+            first_chunk = False
         
         # Save complete assistant message
         complete_response = ''.join(full_response)
@@ -239,4 +239,5 @@ def chat_clear_history(request):
         return JsonResponse({"status": "ok", "message": "Chat history cleared."})
     except ChatConversation.DoesNotExist:
         return JsonResponse({"status": "ok", "message": "No conversation found."})
+
 
