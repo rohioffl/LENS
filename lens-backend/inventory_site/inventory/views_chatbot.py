@@ -81,7 +81,8 @@ def chat_send_message(request):
     assistant_response = chatbot_service.get_completion(messages)
     assistant_response = _strip_redundant_greeting(assistant_response)
     assistant_response = _drop_greeting_sentences(assistant_response)
-    assistant_response = f"{INTRO_GREETING} {assistant_response}".strip()
+    if not conversation.messages.filter(role="assistant").exists():
+        assistant_response = f"{INTRO_GREETING} {assistant_response}".strip()
     
     # Save assistant message
     ChatMessage.objects.create(
@@ -150,17 +151,13 @@ def chat_send_message_stream(request):
         
         # Stream the response
         full_response = []
-        # Prepend fixed greeting
-        full_response.append(INTRO_GREETING + " ")
-        yield (json.dumps({
-            "type": "chunk",
-            "content": INTRO_GREETING + " "
-        }) + "\n").encode('utf-8')
         first_chunk = True
         for chunk in chatbot_service.get_streaming_completion(messages):
             cleaned_chunk = _strip_redundant_greeting(chunk) if first_chunk else chunk
             if first_chunk:
                 cleaned_chunk = _drop_greeting_sentences(cleaned_chunk)
+                if not conversation.messages.filter(role="assistant").exists():
+                    cleaned_chunk = f"{INTRO_GREETING} {cleaned_chunk}".strip()
             if cleaned_chunk:
                 full_response.append(cleaned_chunk)
                 yield (json.dumps({
