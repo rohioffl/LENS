@@ -13,22 +13,20 @@ INTRO_GREETING = "Hello, I'm Skyra. Ready to assist."
 
 def _strip_redundant_greeting(text: str) -> str:
     cleaned = text.lstrip()
-    lowered = cleaned.lower()
-    greeting_starts = ("okay", "ok", "hello", "hi", "hey")
     while True:
         lowered = cleaned.lower().lstrip()
         if not lowered:
             return cleaned
-        if lowered.startswith(greeting_starts):
-            sentence_end = cleaned.find(".")
-            newline_end = cleaned.find("\n")
-            cut_at = None
-            for idx in (sentence_end, newline_end):
-                if idx != -1 and (cut_at is None or idx < cut_at):
-                    cut_at = idx
-            if cut_at is not None:
-                cleaned = cleaned[cut_at + 1 :].lstrip()
-                continue
+        sentence_end = None
+        for token in (".", "!", "?", "\n"):
+            idx = cleaned.find(token)
+            if idx != -1 and (sentence_end is None or idx < sentence_end):
+                sentence_end = idx
+        first_sentence = cleaned if sentence_end is None else cleaned[:sentence_end + 1]
+        first_lower = first_sentence.lower()
+        if any(word in first_lower for word in ("hello", "hi", "hey", "okay", "ok")):
+            cleaned = cleaned[len(first_sentence):].lstrip()
+            continue
         break
     return cleaned
 
