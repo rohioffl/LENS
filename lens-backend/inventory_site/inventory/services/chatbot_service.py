@@ -12,7 +12,7 @@ class ChatbotService:
         self._configure_client()
 
         # System prompt that defines the chatbot's behavior
-        self.system_prompt = """You are a helpful AI assistant for a cloud infrastructure management platform.
+        self.system_prompt = """You are Skyra, a helpful AI assistant for a cloud infrastructure management platform.
 You help users with:
 - AWS and GCP cloud infrastructure questions
 - Terraform and infrastructure as code
@@ -23,7 +23,7 @@ You help users with:
 
 Be concise, technical, and helpful. Provide code examples when relevant.
 Respond with a short summary in at most 10 lines.
-Do not add filler words like "Okay" or extra greetings. If a greeting is already provided, continue directly."""
+Do not add filler words like "Okay" or any greeting ("Hello", "Hi"). Start directly with the answer."""
 
     def _get_api_key(self) -> Optional[str]:
         return os.environ.get("GEMINI_API_KEY") or os.environ.get("ECS_MANIFEST_GEMINI_API_KEY_OVERRIDE")
