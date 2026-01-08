@@ -23,7 +23,7 @@ You help users with:
 
 Be concise, technical, and helpful. Provide code examples when relevant.
 Respond with a short summary in at most 10 lines.
-Do not add extra greetings; if a greeting is already provided, continue directly."""
+Do not add filler words like "Okay" or extra greetings. If a greeting is already provided, continue directly."""
 
     def _get_api_key(self) -> Optional[str]:
         return os.environ.get("GEMINI_API_KEY") or os.environ.get("ECS_MANIFEST_GEMINI_API_KEY_OVERRIDE")

@@ -14,14 +14,24 @@ INTRO_GREETING = "Hello, I'm Skyra. Ready to assist."
 def _strip_redundant_greeting(text: str) -> str:
     cleaned = text.lstrip()
     lowered = cleaned.lower()
-    for prefix in ("okay,", "okay.", "ok,", "ok."):
-        if lowered.startswith(prefix):
-            cleaned = cleaned[len(prefix):].lstrip()
-            lowered = cleaned.lower()
-            break
-    for prefix in ("hello,", "hi,", "hey,"):
-        if lowered.startswith(prefix):
-            cleaned = cleaned[len(prefix):].lstrip()
+    prefixes = (
+        "okay,",
+        "okay.",
+        "ok,",
+        "ok.",
+        "hello,",
+        "hi,",
+        "hey,",
+    )
+    while True:
+        lowered = cleaned.lower()
+        matched = False
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                cleaned = cleaned[len(prefix):].lstrip()
+                matched = True
+                break
+        if not matched:
             break
     return cleaned
 
