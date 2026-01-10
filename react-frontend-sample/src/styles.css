@@ -473,12 +473,13 @@ td {
 }
 
 pre {
-  background: #0f172a;
-  color: #cbd5f5;
+  background: #f1f5f9;
+  color: #334155;
   padding: 1rem;
   border-radius: 6px;
   min-height: 120px;
   white-space: pre-wrap;
+  border: 1px solid #cbd5e1;
 }
 
 .error {
@@ -503,20 +504,23 @@ pre {
 }
 
 .download-link {
-  background: #0f172a;
-  color: #fff;
+  background: #ffffff;
+  color: #2563eb;
   padding: 0.45rem 0.9rem;
   border-radius: 999px;
   text-decoration: none;
   font-weight: 600;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.25);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+  border: 2px solid #2563eb;
 }
 
 .download-link:hover,
 .download-link:focus {
+  background: #2563eb;
+  color: #ffffff;
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.35);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
 }
 
 .checkbox-grid {

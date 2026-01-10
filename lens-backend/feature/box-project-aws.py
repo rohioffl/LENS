@@ -26,6 +26,7 @@ TOP_5_SERVICES = [
     ("s3", "Amazon S3"),
     ("rds", "Amazon RDS"),
     ("ebs", "Amazon EBS"),
+    ("efs", "Amazon EFS"),
 ]
 
 # AWS Regions (common ones)
@@ -629,23 +630,32 @@ def ec2_module() -> Dict[str, str]:
     """EC2 Terraform module"""
     return {
         "variables.tf": """
-variable "ami" {
-  description = "AMI ID"
-  type        = string
-}
-
-variable "instance_type" {
-  description = "EC2 instance type"
-  type        = string
-}
-
-variable "subnet_id" {
-  description = "Subnet ID to launch instance in"
-  type        = string
+variable "instances" {
+  description = "List of EC2 instances to create. SSH key is shared across all instances (see key_name and public_key variables)."
+  type = list(object({
+    id                  = string
+    name                = string
+    ami                 = string
+    instance_type       = string
+    subnet_id           = string
+    root_volume_size    = number
+    root_volume_type    = string
+    security_group_name = string
+    iam_role            = string
+    user_data           = string
+    tags                = string
+  }))
+  default = []
 }
 
 variable "key_name" {
   description = "Key pair name (optional)"
+  type        = string
+  default     = ""
+}
+
+variable "public_key" {
+  description = "Public key content for creating AWS key pair (optional)"
   type        = string
   default     = ""
 }
@@ -663,7 +673,7 @@ variable "security_group_ids" {
 }
 
 variable "tags" {
-  description = "Tags to apply to instance"
+  description = "Tags to apply to instances"
   type        = map(string)
   default     = {}
 }
@@ -672,11 +682,42 @@ variable "vpc_id" {
   description = "VPC ID"
   type        = string
 }
+
+variable "additional_volumes" {
+  description = "Additional EBS volumes to attach to instances"
+  type = list(object({
+    id         = string
+    name       = string
+    size       = number
+    type       = string
+    iops       = number
+    encrypted  = bool
+    linked_ec2 = string
+  }))
+  default = []
+}
+
+variable "availability_zone" {
+  description = "Availability zone for EBS volumes"
+  type        = string
+  default     = ""
+}
 """,
         "main.tf": """
+# Create AWS Key Pair from public key (if provided)
+resource "aws_key_pair" "this" {
+  count      = var.public_key != "" ? 1 : 0
+  key_name   = var.key_name != "" ? var.key_name : "box-ec2-key"
+  public_key = var.public_key
+
+  tags = {
+    Name = var.key_name != "" ? var.key_name : "box-ec2-key"
+  }
+}
+
 resource "aws_security_group" "ec2" {
   name        = "box-ec2-sg"
-  description = "Security group for EC2 instance"
+  description = "Security group for EC2 instances"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -695,6 +736,14 @@ resource "aws_security_group" "ec2" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -707,188 +756,428 @@ resource "aws_security_group" "ec2" {
   }
 }
 
+# IAM role for EC2 instances (created per-instance if iam_role is specified)
+resource "aws_iam_role" "ec2" {
+  for_each = { for inst in var.instances : inst.id => inst if inst.iam_role != "" }
+
+  name = each.value.iam_role
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = each.value.iam_role
+  }
+}
+
+resource "aws_iam_instance_profile" "ec2" {
+  for_each = { for inst in var.instances : inst.id => inst if inst.iam_role != "" }
+
+  name = "${each.value.iam_role}-profile"
+  role = aws_iam_role.ec2[each.key].name
+}
+
+# Security groups for instances with custom security group names
+resource "aws_security_group" "custom" {
+  for_each = { for inst in var.instances : inst.id => inst if inst.security_group_name != "" }
+
+  name        = each.value.security_group_name
+  description = "Custom security group for ${each.value.name}"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = each.value.security_group_name
+  }
+}
+
+# Create multiple EC2 instances using for_each
 resource "aws_instance" "this" {
-  ami                    = var.ami
-  instance_type          = var.instance_type
-  subnet_id              = var.subnet_id
-  key_name               = var.key_name != "" ? var.key_name : null
-  user_data              = var.user_data != "" ? base64encode(var.user_data) : null
-  vpc_security_group_ids = concat([aws_security_group.ec2.id], var.security_group_ids)
+  for_each = { for inst in var.instances : inst.id => inst }
+
+  ami                    = each.value.ami
+  instance_type          = each.value.instance_type
+  subnet_id              = each.value.subnet_id
+  key_name               = var.public_key != "" ? aws_key_pair.this[0].key_name : (var.key_name != "" ? var.key_name : null)
+  user_data              = each.value.user_data != "" ? base64encode(each.value.user_data) : (var.user_data != "" ? base64encode(var.user_data) : null)
+  iam_instance_profile   = each.value.iam_role != "" ? aws_iam_instance_profile.ec2[each.key].name : null
+  vpc_security_group_ids = each.value.security_group_name != "" ? concat([aws_security_group.custom[each.key].id], var.security_group_ids) : concat([aws_security_group.ec2.id], var.security_group_ids)
+
+  root_block_device {
+    volume_size = each.value.root_volume_size
+    volume_type = each.value.root_volume_type
+    encrypted   = true
+  }
+
+  dynamic "tag_specifications" {
+    for_each = each.value.tags != "" ? [1] : []
+    content {
+      resource_type = "instance"
+      tags = merge(
+        {
+          Name = each.value.name
+        },
+        try(jsondecode(each.value.tags), {}),
+        var.tags
+      )
+    }
+  }
 
   tags = merge(
     {
-      Name = "box-ec2"
+      Name = each.value.name
+    },
+    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    var.tags
+  )
+}
+
+# Additional EBS volumes
+resource "aws_ebs_volume" "additional" {
+  for_each = { for vol in var.additional_volumes : vol.id => vol }
+
+  availability_zone = var.availability_zone != "" ? var.availability_zone : (
+    length(var.instances) > 0 ? aws_instance.this[var.instances[0].id].availability_zone : null
+  )
+  size              = each.value.size
+  type              = each.value.type
+  encrypted         = each.value.encrypted
+  iops              = contains(["gp3", "io1", "io2"], each.value.type) ? each.value.iops : null
+  throughput        = each.value.type == "gp3" ? 125 : null
+
+  tags = merge(
+    {
+      Name = each.value.name
     },
     var.tags
   )
 }
+
+# Attach additional volumes to EC2 instances
+resource "aws_volume_attachment" "additional" {
+  for_each = { 
+    for vol in var.additional_volumes : vol.id => vol 
+    if vol.linked_ec2 != "" && contains(keys({ for inst in var.instances : inst.id => inst }), vol.linked_ec2)
+  }
+
+  device_name = "/dev/sd${substr("fghijklmnop", index([for v in var.additional_volumes : v.id], each.key) % 11, 1)}"
+  volume_id   = aws_ebs_volume.additional[each.key].id
+  instance_id = aws_instance.this[each.value.linked_ec2].id
+}
 """,
         "outputs.tf": """
-output "instance_id" {
-  description = "EC2 instance ID"
-  value       = aws_instance.this.id
+output "instance_ids" {
+  description = "Map of EC2 instance IDs"
+  value       = { for k, v in aws_instance.this : k => v.id }
 }
 
-output "instance_public_ip" {
-  description = "Public IP address"
-  value       = aws_instance.this.public_ip
+output "instance_public_ips" {
+  description = "Map of public IP addresses"
+  value       = { for k, v in aws_instance.this : k => v.public_ip }
 }
 
-output "instance_private_ip" {
-  description = "Private IP address"
-  value       = aws_instance.this.private_ip
+output "instance_private_ips" {
+  description = "Map of private IP addresses"
+  value       = { for k, v in aws_instance.this : k => v.private_ip }
 }
 
 output "security_group_id" {
   description = "Security group ID"
   value       = aws_security_group.ec2.id
 }
+
+output "key_pair_name" {
+  description = "Key pair name used for SSH access"
+  value       = var.public_key != "" ? aws_key_pair.this[0].key_name : var.key_name
+}
+
+output "key_pair_fingerprint" {
+  description = "Key pair fingerprint (if created)"
+  value       = var.public_key != "" ? aws_key_pair.this[0].fingerprint : ""
+}
+
+output "instances_summary" {
+  description = "Summary of all created instances"
+  value = { for k, v in aws_instance.this : k => {
+    id         = v.id
+    name       = v.tags["Name"]
+    public_ip  = v.public_ip
+    private_ip = v.private_ip
+    type       = v.instance_type
+  }}
+}
+
+output "additional_volume_ids" {
+  description = "Map of additional EBS volume IDs"
+  value       = { for k, v in aws_ebs_volume.additional : k => v.id }
+}
+
+output "additional_volumes_summary" {
+  description = "Summary of additional volumes"
+  value = { for k, v in aws_ebs_volume.additional : k => {
+    id        = v.id
+    name      = v.tags["Name"]
+    size      = v.size
+    type      = v.type
+    encrypted = v.encrypted
+  }}
+}
+
+output "volume_attachments" {
+  description = "Volume attachment details"
+  value = { for k, v in aws_volume_attachment.additional : k => {
+    volume_id   = v.volume_id
+    instance_id = v.instance_id
+    device_name = v.device_name
+  }}
+}
 """
     }
 
 
 def s3_module() -> Dict[str, str]:
-    """S3 Terraform module"""
+    """S3 Terraform module with support for multiple buckets"""
     return {
         "variables.tf": """
-variable "bucket_name" {
-  description = "S3 bucket name (must be globally unique)"
-  type        = string
-}
-
-variable "versioning" {
-  description = "Enable versioning"
-  type        = bool
-  default     = false
-}
-
-variable "encryption" {
-  description = "Enable server-side encryption"
-  type        = bool
-  default     = true
-}
-
-variable "public_access" {
-  description = "Allow public access"
-  type        = bool
-  default     = false
+variable "buckets" {
+  description = "List of S3 buckets to create"
+  type = list(object({
+    bucket_name                = string
+    versioning                 = bool
+    encryption                 = bool
+    block_public_access        = bool
+    storage_class              = string
+    enable_logging             = bool
+    lifecycle_ia_days          = number
+    lifecycle_glacier_days     = number
+    lifecycle_expiration_days  = number
+    enable_cors                = bool
+    tags                       = string
+  }))
+  default = []
 }
 
 variable "tags" {
-  description = "Tags to apply to bucket"
+  description = "Tags to apply to buckets"
   type        = map(string)
   default     = {}
 }
 """,
         "main.tf": """
+# Create multiple S3 buckets using for_each
 resource "aws_s3_bucket" "this" {
-  bucket = var.bucket_name
+  for_each = { for idx, bucket in var.buckets : bucket.bucket_name => bucket if bucket.bucket_name != "" }
+
+  bucket = each.value.bucket_name
 
   tags = merge(
     {
-      Name = var.bucket_name
+      Name         = each.value.bucket_name
+      StorageClass = each.value.storage_class
     },
+    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
     var.tags
   )
 }
 
 resource "aws_s3_bucket_versioning" "this" {
-  bucket = aws_s3_bucket.this.id
+  for_each = aws_s3_bucket.this
+
+  bucket = each.value.id
   versioning_configuration {
-    status = var.versioning ? "Enabled" : "Disabled"
+    status = var.buckets[index(var.buckets.*.bucket_name, each.key)].versioning ? "Enabled" : "Disabled"
   }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
+  for_each = { for k, v in aws_s3_bucket.this : k => v if var.buckets[index(var.buckets.*.bucket_name, k)].encryption }
+
+  bucket = each.value.id
 
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
+    bucket_key_enabled = true
   }
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  bucket = aws_s3_bucket.this.id
+  for_each = aws_s3_bucket.this
 
-  block_public_acls       = !var.public_access
-  block_public_policy     = !var.public_access
-  ignore_public_acls      = !var.public_access
-  restrict_public_buckets = !var.public_access
+  bucket = each.value.id
+
+  block_public_acls       = var.buckets[index(var.buckets.*.bucket_name, each.key)].block_public_access
+  block_public_policy     = var.buckets[index(var.buckets.*.bucket_name, each.key)].block_public_access
+  ignore_public_acls      = var.buckets[index(var.buckets.*.bucket_name, each.key)].block_public_access
+  restrict_public_buckets = var.buckets[index(var.buckets.*.bucket_name, each.key)].block_public_access
+}
+
+# Lifecycle configuration for buckets with lifecycle rules
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  for_each = { 
+    for k, v in aws_s3_bucket.this : k => v 
+    if (
+      var.buckets[index(var.buckets.*.bucket_name, k)].lifecycle_ia_days != null ||
+      var.buckets[index(var.buckets.*.bucket_name, k)].lifecycle_glacier_days != null ||
+      var.buckets[index(var.buckets.*.bucket_name, k)].lifecycle_expiration_days != null
+    )
+  }
+
+  bucket = each.value.id
+
+  rule {
+    id     = "lifecycle-rule"
+    status = "Enabled"
+
+    dynamic "transition" {
+      for_each = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_ia_days != null ? [1] : []
+      content {
+        days          = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_ia_days
+        storage_class = "STANDARD_IA"
+      }
+    }
+
+    dynamic "transition" {
+      for_each = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_glacier_days != null ? [1] : []
+      content {
+        days          = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_glacier_days
+        storage_class = "GLACIER"
+      }
+    }
+
+    dynamic "expiration" {
+      for_each = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_expiration_days != null ? [1] : []
+      content {
+        days = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_expiration_days
+      }
+    }
+  }
+}
+
+# CORS configuration for buckets with CORS enabled
+resource "aws_s3_bucket_cors_configuration" "this" {
+  for_each = { 
+    for k, v in aws_s3_bucket.this : k => v 
+    if var.buckets[index(var.buckets.*.bucket_name, k)].enable_cors
+  }
+
+  bucket = each.value.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "PUT", "POST", "DELETE", "HEAD"]
+    allowed_origins = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
+# Logging configuration for buckets with logging enabled
+resource "aws_s3_bucket_logging" "this" {
+  for_each = { 
+    for k, v in aws_s3_bucket.this : k => v 
+    if var.buckets[index(var.buckets.*.bucket_name, k)].enable_logging
+  }
+
+  bucket = each.value.id
+
+  target_bucket = "${each.value.id}-logs"
+  target_prefix = "log/"
 }
 """,
         "outputs.tf": """
-output "bucket_id" {
-  description = "S3 bucket ID"
-  value       = aws_s3_bucket.this.id
+output "bucket_ids" {
+  description = "Map of S3 bucket IDs"
+  value       = { for k, v in aws_s3_bucket.this : k => v.id }
 }
 
-output "bucket_arn" {
-  description = "S3 bucket ARN"
-  value       = aws_s3_bucket.this.arn
+output "bucket_arns" {
+  description = "Map of S3 bucket ARNs"
+  value       = { for k, v in aws_s3_bucket.this : k => v.arn }
 }
 
-output "bucket_domain_name" {
-  description = "S3 bucket domain name"
-  value       = aws_s3_bucket.this.bucket_domain_name
+output "bucket_domain_names" {
+  description = "Map of S3 bucket domain names"
+  value       = { for k, v in aws_s3_bucket.this : k => v.bucket_domain_name }
+}
+
+output "buckets_summary" {
+  description = "Summary of all created buckets"
+  value = { for k, v in aws_s3_bucket.this : k => {
+    id          = v.id
+    arn         = v.arn
+    domain_name = v.bucket_domain_name
+  }}
 }
 """
     }
 
 
 def rds_module() -> Dict[str, str]:
-    """RDS Terraform module"""
+    """RDS Terraform module with support for multiple databases"""
     return {
         "variables.tf": """
-variable "identifier" {
-  description = "RDS instance identifier"
-  type        = string
-}
-
-variable "engine" {
-  description = "Database engine"
-  type        = string
-}
-
-variable "engine_version" {
-  description = "Engine version"
-  type        = string
-  default     = ""
-}
-
-variable "instance_class" {
-  description = "DB instance class"
-  type        = string
-}
-
-variable "allocated_storage" {
-  description = "Allocated storage in GB"
-  type        = number
-  default     = 20
-}
-
-variable "storage_type" {
-  description = "Storage type"
-  type        = string
-  default     = "gp3"
-}
-
-variable "db_name" {
-  description = "Database name"
-  type        = string
-  default     = ""
-}
-
-variable "username" {
-  description = "Master username"
-  type        = string
-}
-
-variable "password" {
-  description = "Master password"
-  type        = string
-  sensitive   = true
+variable "databases" {
+  description = "List of RDS databases to create"
+  type = list(object({
+    identifier              = string
+    engine                  = string
+    instance_class          = string
+    allocated_storage       = number
+    storage_type            = string
+    db_name                 = string
+    username                = string
+    password                = string
+    backup_retention_period = number
+    security_group_name     = string
+    publicly_accessible     = bool
+    multi_az                = bool
+    backup_window           = string
+    maintenance_window      = string
+    tags                    = string
+  }))
+  default = []
 }
 
 variable "subnet_ids" {
@@ -901,12 +1190,6 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "backup_retention_period" {
-  description = "Backup retention period in days"
-  type        = number
-  default     = 7
-}
-
 variable "skip_final_snapshot" {
   description = "Skip final snapshot on deletion"
   type        = bool
@@ -914,33 +1197,88 @@ variable "skip_final_snapshot" {
 }
 
 variable "tags" {
-  description = "Tags to apply to RDS instance"
+  description = "Tags to apply to RDS instances"
   type        = map(string)
   default     = {}
 }
 """,
         "main.tf": """
+# Shared subnet group for all RDS instances
 resource "aws_db_subnet_group" "this" {
-  name       = "${var.identifier}-subnet-group"
+  name       = "rds-subnet-group"
   subnet_ids = var.subnet_ids
 
-  tags = {
-    Name = "${var.identifier}-subnet-group"
-  }
+  tags = merge(
+    {
+      Name = "rds-subnet-group"
+    },
+    var.tags
+  )
 }
 
+data "aws_vpc" "this" {
+  id = var.vpc_id
+}
+
+# Security group for all RDS instances (default)
 resource "aws_security_group" "rds" {
-  name        = "${var.identifier}-sg"
-  description = "Security group for RDS instance"
+  name        = "rds-security-group"
+  description = "Security group for RDS instances"
   vpc_id      = var.vpc_id
 
   ingress {
-    description     = "Database access"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = []
-    cidr_blocks     = [data.aws_vpc.this.cidr_block]
+    description = "MySQL"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
+  }
+
+  ingress {
+    description = "PostgreSQL"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(
+    {
+      Name = "rds-security-group"
+    },
+    var.tags
+  )
+}
+
+# Custom security groups for databases with custom security group names
+resource "aws_security_group" "custom" {
+  for_each = { for db in var.databases : db.identifier => db if db.security_group_name != "" }
+
+  name        = each.value.security_group_name
+  description = "Custom security group for ${each.value.identifier}"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "MySQL"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
+  }
+
+  ingress {
+    description = "PostgreSQL"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
   }
 
   egress {
@@ -951,82 +1289,96 @@ resource "aws_security_group" "rds" {
   }
 
   tags = {
-    Name = "${var.identifier}-sg"
+    Name = each.value.security_group_name
   }
 }
 
-data "aws_vpc" "this" {
-  id = var.vpc_id
-}
-
+# Create multiple RDS instances using for_each
 resource "aws_db_instance" "this" {
-  identifier             = var.identifier
-  engine                 = var.engine
-  engine_version         = var.engine_version != "" ? var.engine_version : null
-  instance_class         = var.instance_class
-  allocated_storage      = var.allocated_storage
-  storage_type           = var.storage_type
-  db_name                = var.db_name != "" ? var.db_name : null
-  username               = var.username
-  password               = var.password
-  db_subnet_group_name   = aws_db_subnet_group.this.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  backup_retention_period = var.backup_retention_period
-  skip_final_snapshot    = var.skip_final_snapshot
-  publicly_accessible    = false
+  for_each = { for db in var.databases : db.identifier => db }
+
+  identifier                  = each.value.identifier
+  engine                      = each.value.engine
+  instance_class              = each.value.instance_class
+  allocated_storage           = each.value.allocated_storage
+  storage_type                = each.value.storage_type
+  db_name                     = each.value.db_name != "" ? each.value.db_name : null
+  username                    = each.value.username
+  password                    = each.value.password
+  db_subnet_group_name        = aws_db_subnet_group.this.name
+  vpc_security_group_ids      = each.value.security_group_name != "" ? [aws_security_group.custom[each.key].id] : [aws_security_group.rds.id]
+  backup_retention_period     = each.value.backup_retention_period
+  skip_final_snapshot         = var.skip_final_snapshot
+  publicly_accessible         = each.value.publicly_accessible
+  multi_az                    = each.value.multi_az
+  preferred_backup_window     = each.value.backup_window != "" ? each.value.backup_window : null
+  preferred_maintenance_window = each.value.maintenance_window != "" ? each.value.maintenance_window : null
 
   tags = merge(
     {
-      Name = var.identifier
+      Name = each.value.identifier
     },
+    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
     var.tags
   )
 }
 """,
         "outputs.tf": """
-output "db_instance_id" {
-  description = "RDS instance ID"
-  value       = aws_db_instance.this.id
+output "db_instance_ids" {
+  description = "Map of RDS instance IDs"
+  value       = { for k, v in aws_db_instance.this : k => v.id }
 }
 
-output "db_instance_endpoint" {
-  description = "RDS instance endpoint"
-  value       = aws_db_instance.this.endpoint
+output "db_instance_endpoints" {
+  description = "Map of RDS instance endpoints"
+  value       = { for k, v in aws_db_instance.this : k => v.endpoint }
 }
 
-output "db_instance_arn" {
-  description = "RDS instance ARN"
-  value       = aws_db_instance.this.arn
+output "db_instance_arns" {
+  description = "Map of RDS instance ARNs"
+  value       = { for k, v in aws_db_instance.this : k => v.arn }
+}
+
+output "databases_summary" {
+  description = "Summary of all created databases"
+  value = { for k, v in aws_db_instance.this : k => {
+    id       = v.id
+    endpoint = v.endpoint
+    engine   = v.engine
+    port     = v.port
+  }}
 }
 """
     }
 
 
 def ebs_module() -> Dict[str, str]:
-    """EBS Terraform module"""
+    """EBS Terraform module - supports multiple volumes with EC2 attachment"""
     return {
         "variables.tf": """
-variable "volume_size" {
-  description = "Size of the volume in GB"
-  type        = number
-  default     = 20
-}
-
-variable "volume_type" {
-  description = "Type of EBS volume"
-  type        = string
-  default     = "gp3"
+variable "volumes" {
+  description = "List of EBS volumes to create"
+  type = list(object({
+    id         = string
+    name       = string
+    size       = number
+    type       = string
+    iops       = number
+    encrypted  = bool
+    linked_ec2 = string  # EC2 instance ID to attach to (empty for standalone)
+  }))
+  default = []
 }
 
 variable "availability_zone" {
-  description = "Availability zone for the volume"
+  description = "Availability zone for the volumes"
   type        = string
 }
 
-variable "encrypted" {
-  description = "Enable encryption"
-  type        = bool
-  default     = true
+variable "ec2_instance_ids" {
+  description = "Map of EC2 instance IDs for attachment"
+  type        = map(string)
+  default     = {}
 }
 
 variable "kms_key_id" {
@@ -1035,56 +1387,303 @@ variable "kms_key_id" {
   default     = ""
 }
 
-variable "iops" {
-  description = "IOPS for gp3 volumes"
-  type        = number
-  default     = 3000
-}
-
-variable "throughput" {
-  description = "Throughput in MiB/s for gp3 volumes"
-  type        = number
-  default     = 125
-}
-
 variable "tags" {
-  description = "Tags to apply to EBS volume"
+  description = "Tags to apply to EBS volumes"
   type        = map(string)
   default     = {}
 }
 """,
         "main.tf": """
+# Create multiple EBS volumes using for_each
 resource "aws_ebs_volume" "this" {
+  for_each = { for vol in var.volumes : vol.id => vol }
+
   availability_zone = var.availability_zone
-  size              = var.volume_size
-  type              = var.volume_type
-  encrypted         = var.encrypted
-  iops              = var.volume_type == "gp3" ? var.iops : null
-  throughput        = var.volume_type == "gp3" ? var.throughput : null
-  kms_key_id        = var.encrypted && var.kms_key_id != "" ? var.kms_key_id : null
+  size              = each.value.size
+  type              = each.value.type
+  encrypted         = each.value.encrypted
+  iops              = contains(["gp3", "io1", "io2"], each.value.type) ? each.value.iops : null
+  throughput        = each.value.type == "gp3" ? 125 : null
+  kms_key_id        = each.value.encrypted && var.kms_key_id != "" ? var.kms_key_id : null
 
   tags = merge(
     {
-      Name = "box-ebs-volume"
+      Name = each.value.name
+    },
+    var.tags
+  )
+}
+
+# Attach volumes to EC2 instances (if linked_ec2 is specified)
+resource "aws_volume_attachment" "this" {
+  for_each = { 
+    for vol in var.volumes : vol.id => vol 
+    if vol.linked_ec2 != "" && lookup(var.ec2_instance_ids, vol.linked_ec2, "") != ""
+  }
+
+  device_name = "/dev/sd${substr("fghijklmnop", index([for v in var.volumes : v.id if v.linked_ec2 != ""], each.key), 1)}"
+  volume_id   = aws_ebs_volume.this[each.key].id
+  instance_id = var.ec2_instance_ids[each.value.linked_ec2]
+}
+""",
+        "outputs.tf": """
+output "volume_ids" {
+  description = "Map of EBS volume IDs"
+  value       = { for k, v in aws_ebs_volume.this : k => v.id }
+}
+
+output "volume_arns" {
+  description = "Map of EBS volume ARNs"
+  value       = { for k, v in aws_ebs_volume.this : k => v.arn }
+}
+
+output "volumes_summary" {
+  description = "Summary of all created volumes"
+  value = { for k, v in aws_ebs_volume.this : k => {
+    id        = v.id
+    name      = v.tags["Name"]
+    size      = v.size
+    type      = v.type
+    encrypted = v.encrypted
+  }}
+}
+
+output "attachments" {
+  description = "Volume attachments to EC2 instances"
+  value       = { for k, v in aws_volume_attachment.this : k => {
+    volume_id   = v.volume_id
+    instance_id = v.instance_id
+    device_name = v.device_name
+  }}
+}
+"""
+    }
+
+
+def efs_module() -> Dict[str, str]:
+    """EFS Terraform module with support for multiple file systems"""
+    return {
+        "variables.tf": """
+variable "filesystems" {
+  description = "List of EFS file systems to create. Encryption uses AWS-managed keys by default (kms_key_id is optional)."
+  type = list(object({
+    name                = string
+    performance_mode    = string
+    throughput_mode     = string
+    storage_class       = string
+    encrypted           = bool
+    enable_backup       = bool
+    transition_to_ia    = number
+    security_group_name = string
+    tags                = string
+    # Note: kms_key_id is optional and handled via lookup() in main.tf
+  }))
+  default = []
+}
+
+variable "subnet_ids" {
+  description = "List of subnet IDs for mount targets"
+  type        = list(string)
+  default     = []
+}
+
+variable "vpc_id" {
+  description = "VPC ID for creating security group"
+  type        = string
+  default     = ""
+}
+
+variable "tags" {
+  description = "Tags to apply to EFS resources"
+  type        = map(string)
+  default     = {}
+}
+""",
+        "main.tf": """
+# Security Group for all EFS file systems (default)
+resource "aws_security_group" "efs" {
+  count = var.vpc_id != "" ? 1 : 0
+  
+  name        = "efs-security-group"
+  description = "Security group for EFS mount targets"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "NFS from VPC"
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(
+    {
+      Name = "efs-security-group"
+    },
+    var.tags
+  )
+}
+
+# Custom security groups for file systems with custom security group names
+resource "aws_security_group" "custom" {
+  for_each = { for fs in var.filesystems : fs.name => fs if fs.security_group_name != "" && var.vpc_id != "" }
+
+  name        = each.value.security_group_name
+  description = "Custom security group for ${each.value.name}"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "NFS from VPC"
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = each.value.security_group_name
+  }
+}
+
+# Create multiple EFS file systems using for_each
+resource "aws_efs_file_system" "this" {
+  for_each = { for fs in var.filesystems : fs.name => fs }
+
+  creation_token   = each.value.name
+  performance_mode = each.value.performance_mode
+  throughput_mode  = each.value.throughput_mode
+  encrypted        = each.value.encrypted
+  # KMS key is optional - if not provided, AWS-managed encryption is used
+  kms_key_id       = each.value.encrypted && lookup(each.value, "kms_key_id", null) != null && lookup(each.value, "kms_key_id", "") != "" ? lookup(each.value, "kms_key_id", null) : null
+
+  dynamic "lifecycle_policy" {
+    for_each = each.value.transition_to_ia != null && each.value.transition_to_ia > 0 ? [1] : []
+    content {
+      transition_to_ia = "AFTER_${each.value.transition_to_ia}_DAYS"
+    }
+  }
+
+  tags = merge(
+    {
+      Name = each.value.name
+    },
+    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    var.tags
+  )
+}
+
+# Mount Targets for each file system (one per subnet)
+resource "aws_efs_mount_target" "this" {
+  for_each = { 
+    for pair in flatten([
+      for fs_name, fs in var.filesystems : [
+        for subnet_id in var.subnet_ids : {
+          key                 = "${fs_name}-${subnet_id}"
+          file_system_name    = fs_name
+          file_system_id      = aws_efs_file_system.this[fs_name].id
+          subnet_id           = subnet_id
+          security_group_name = fs.security_group_name
+        }
+      ]
+    ]) : pair.key => pair
+  }
+  
+  file_system_id  = each.value.file_system_id
+  subnet_id       = each.value.subnet_id
+  security_groups = each.value.security_group_name != "" ? [aws_security_group.custom[each.value.file_system_name].id] : (var.vpc_id != "" ? [aws_security_group.efs[0].id] : [])
+}
+
+# Backup Policy for each file system (if enabled)
+resource "aws_efs_backup_policy" "this" {
+  for_each = { for fs in var.filesystems : fs.name => fs if fs.enable_backup }
+  
+  file_system_id = aws_efs_file_system.this[each.key].id
+
+  backup_policy {
+    status = "ENABLED"
+  }
+}
+
+# Access Point for each file system
+resource "aws_efs_access_point" "this" {
+  for_each = aws_efs_file_system.this
+
+  file_system_id = each.value.id
+  
+  posix_user {
+    gid = 1000
+    uid = 1000
+  }
+  
+  root_directory {
+    path = "/data"
+    creation_info {
+      owner_gid   = 1000
+      owner_uid   = 1000
+      permissions = "755"
+    }
+  }
+
+  tags = merge(
+    {
+      Name = "${each.key}-access-point"
     },
     var.tags
   )
 }
 """,
         "outputs.tf": """
-output "volume_id" {
-  description = "EBS volume ID"
-  value       = aws_ebs_volume.this.id
+output "file_system_ids" {
+  description = "Map of EFS file system IDs"
+  value       = { for k, v in aws_efs_file_system.this : k => v.id }
 }
 
-output "volume_arn" {
-  description = "EBS volume ARN"
-  value       = aws_ebs_volume.this.arn
+output "file_system_arns" {
+  description = "Map of EFS file system ARNs"
+  value       = { for k, v in aws_efs_file_system.this : k => v.arn }
 }
 
-output "volume_size" {
-  description = "EBS volume size"
-  value       = aws_ebs_volume.this.size
+output "file_system_dns_names" {
+  description = "Map of EFS file system DNS names"
+  value       = { for k, v in aws_efs_file_system.this : k => v.dns_name }
+}
+
+output "access_point_ids" {
+  description = "Map of EFS access point IDs"
+  value       = { for k, v in aws_efs_access_point.this : k => v.id }
+}
+
+output "security_group_id" {
+  description = "Security group ID for EFS"
+  value       = var.vpc_id != "" ? aws_security_group.efs[0].id : null
+}
+
+output "filesystems_summary" {
+  description = "Summary of all created file systems"
+  value = { for k, v in aws_efs_file_system.this : k => {
+    id       = v.id
+    arn      = v.arn
+    dns_name = v.dns_name
+  }}
+}
+
+output "mount_commands" {
+  description = "Commands to mount EFS on EC2 instances"
+  value = { for k, v in aws_efs_file_system.this : k => "sudo mount -t efs -o tls ${v.id}:/ /mnt/${k}" }
 }
 """
     }
@@ -1096,6 +1695,7 @@ SERVICE_TEMPLATES = {
     "s3": s3_module,
     "rds": rds_module,
     "ebs": ebs_module,
+    "efs": efs_module,
 }
 
 
@@ -1298,20 +1898,144 @@ def render_variables_tf(variable_names: List[str]) -> str:
 
 
 def render_tfvars(values: Dict[str, Any]) -> str:
-    """Render terraform.tfvars file"""
-    lines = []
-    for key, value in values.items():
+    """Render terraform.tfvars file with proper HCL formatting"""
+    
+    def format_value(value, indent=0):
+        """Format a value as HCL"""
+        spaces = "  " * indent
+        
         if value is None:
-            continue
-        if isinstance(value, bool):
-            lines.append(f"{key} = {str(value).lower()}")
+            return "null"
+        elif isinstance(value, bool):
+            return str(value).lower()
         elif isinstance(value, (int, float)):
-            lines.append(f"{key} = {value}")
+            return str(value)
+        elif isinstance(value, str):
+            # Check if it contains newlines (multiline string)
+            if '\n' in value:
+                lines = value.split('\n')
+                return '<<-EOF\n' + '\n'.join(f'{spaces}  {line}' for line in lines) + f'\n{spaces}EOF'
+            else:
+                # Check if it looks like JSON (starts with { or [)
+                if value.strip().startswith(('{', '[')):
+                    try:
+                        # Try to parse as JSON and convert to HCL
+                        parsed = json.loads(value)
+                        return format_value(parsed, indent)
+                    except:
+                        pass
+                return json.dumps(value)
+        elif isinstance(value, dict):
+            # Format as HCL map
+            items = []
+            for k, v in value.items():
+                # Skip empty KMS key IDs and other optional advanced fields
+                if k == 'kms_key_id' and (v == "" or v is None):
+                    continue
+                formatted_v = format_value(v, indent + 1)
+                items.append(f'{spaces}  {k} = {formatted_v}')
+            return '{\n' + '\n'.join(items) + f'\n{spaces}}}'
         elif isinstance(value, list):
-            lines.append(f"{key} = {json.dumps(value)}")
+            if not value:
+                return '[]'
+            
+            # Check if it's a list of objects/dicts
+            if isinstance(value[0], dict):
+                items = []
+                for item in value:
+                    obj_items = []
+                    for k, v in item.items():
+                        # Skip empty/null KMS key IDs and other optional advanced fields
+                        if k == 'kms_key_id' and (not v or v == "" or v is None):
+                            continue
+                        formatted_v = format_value(v, indent + 1)
+                        obj_items.append(f'{spaces}    {k} = {formatted_v}')
+                    items.append(f'{spaces}  {{\n' + '\n'.join(obj_items) + f'\n{spaces}  }}')
+                return '[\n' + ',\n'.join(items) + f'\n{spaces}]'
+            else:
+                # Simple list
+                formatted_items = [json.dumps(item) if isinstance(item, str) else str(item) for item in value]
+                return '[' + ', '.join(formatted_items) + ']'
         else:
-            lines.append(f"{key} = {json.dumps(str(value))}")
-    return "\n".join(lines)
+            return json.dumps(str(value))
+    
+    def add_section(lines, title, keys, values):
+        """Add a commented section"""
+        lines.append("")
+        lines.append("#" * 50)
+        lines.append(f"# {title}")
+        lines.append("#" * 50)
+        lines.append("")
+        
+        for key in keys:
+            if key in values and values[key] is not None:
+                # Skip empty KMS key IDs and other sensitive/optional advanced fields
+                if key == 'kms_key_id' and (values[key] == "" or values[key] is None):
+                    continue
+                    
+                formatted = format_value(values[key])
+                
+                # Handle long single-line values
+                if isinstance(values[key], str) and '\n' not in values[key] and len(formatted) > 80:
+                    lines.append(f"{key} = \\")
+                    lines.append(f"  {formatted}")
+                else:
+                    lines.append(f"{key} = {formatted}")
+                lines.append("")
+    
+    lines = []
+    
+    # Global section
+    if 'region' in values:
+        add_section(lines, "Global Configuration", ['region'], values)
+    
+    # VPC section
+    vpc_keys = [k for k in values.keys() if k.startswith('vpc_')]
+    if vpc_keys:
+        add_section(lines, "VPC Configuration", sorted(vpc_keys), values)
+    
+    # EC2 section
+    ec2_keys = [k for k in values.keys() if k.startswith('ec2_')]
+    if ec2_keys:
+        # Separate EC2 instances and volumes
+        instance_keys = ['ec2_key_name', 'ec2_public_key', 'ec2_instances']
+        volume_keys = ['ec2_additional_volumes']
+        
+        if any(k in values for k in instance_keys):
+            add_section(lines, "EC2 Configuration", 
+                       [k for k in instance_keys if k in values], values)
+        
+        if any(k in values for k in volume_keys):
+            add_section(lines, "EC2 Additional Volumes", 
+                       [k for k in volume_keys if k in values], values)
+    
+    # S3 section
+    s3_keys = [k for k in values.keys() if k.startswith('s3_')]
+    if s3_keys:
+        add_section(lines, "S3 Buckets", sorted(s3_keys), values)
+    
+    # RDS section
+    rds_keys = [k for k in values.keys() if k.startswith('rds_')]
+    if rds_keys:
+        add_section(lines, "RDS Configuration", sorted(rds_keys), values)
+    
+    # EFS section
+    efs_keys = [k for k in values.keys() if k.startswith('efs_')]
+    if efs_keys:
+        add_section(lines, "EFS Configuration", sorted(efs_keys), values)
+    
+    # EBS section (if any standalone)
+    ebs_keys = [k for k in values.keys() if k.startswith('ebs_') and not k.startswith('ec2_')]
+    if ebs_keys:
+        add_section(lines, "EBS Configuration", sorted(ebs_keys), values)
+    
+    # Any other keys not covered
+    covered_prefixes = ['region', 'vpc_', 'ec2_', 's3_', 'rds_', 'efs_', 'ebs_']
+    other_keys = [k for k in values.keys() if not any(k.startswith(p) or k == p for p in covered_prefixes)]
+    if other_keys:
+        add_section(lines, "Additional Configuration", sorted(other_keys), values)
+    
+    return '\n'.join(lines).strip() + '\n'
 
 
 def root_module_call(service: str, inputs: Dict[str, str]) -> str:

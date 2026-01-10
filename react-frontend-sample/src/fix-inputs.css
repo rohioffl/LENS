@@ -1,0 +1,29 @@
+/* Ensure inputs are always editable */
+input,
+select,
+textarea {
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  cursor: text !important;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  pointer-events: none !important;
+  cursor: not-allowed !important;
+}
+
+/* Ensure no overlay blocks inputs */
+fieldset {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-container {
+  position: relative;
+  z-index: auto;
+}
+

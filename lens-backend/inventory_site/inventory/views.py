@@ -1526,7 +1526,7 @@ def box_project_aws_availability_zones_api(request):
 
 @csrf_exempt
 def box_project_aws_generate_key_pair_api(request):
-    """API endpoint to generate SSH key pair"""
+    """API endpoint to generate SSH key pair using Python cryptography library"""
     if request.method != "POST":
         return JsonResponse({"error": "Only POST is allowed."}, status=405)
     
@@ -1536,68 +1536,42 @@ def box_project_aws_generate_key_pair_api(request):
         if not key_name:
             return JsonResponse({"error": "Key name is required."}, status=400)
         
-        import subprocess
-        import tempfile
-        import os
+        # Use Python's cryptography library instead of ssh-keygen
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.backends import default_backend
         
-        # Generate SSH key pair using ssh-keygen
-        with tempfile.TemporaryDirectory() as tmpdir:
-            private_key_path = os.path.join(tmpdir, f"{key_name}.pem")
-            public_key_path = os.path.join(tmpdir, f"{key_name}.pub")
-            
-            # Generate key pair
-            # On Windows, try ssh-keygen.exe or use full path
-            import platform
-            ssh_keygen_cmd = "ssh-keygen"
-            result = None
-            if platform.system() == "Windows":
-                # Try common Windows OpenSSH locations
-                possible_paths = [
-                    "ssh-keygen.exe",
-                    "C:\\Windows\\System32\\OpenSSH\\ssh-keygen.exe",
-                    "C:\\Program Files\\OpenSSH\\ssh-keygen.exe"
-                ]
-                for path in possible_paths:
-                    try:
-                        result = subprocess.run(
-                            [path, "-t", "rsa", "-b", "4096", "-f", private_key_path, "-N", "", "-q"],
-                            capture_output=True,
-                            text=True,
-                            timeout=10
-                        )
-                        if result.returncode == 0:
-                            break
-                    except (FileNotFoundError, OSError):
-                        continue
-                if not result or result.returncode != 0:
-                    error_msg = result.stderr if result else "ssh-keygen not found"
-                    return JsonResponse({"error": f"ssh-keygen not found or failed. {error_msg}. Please install OpenSSH for Windows or use WSL."}, status=500)
-            else:
-                result = subprocess.run(
-                    [ssh_keygen_cmd, "-t", "rsa", "-b", "4096", "-f", private_key_path, "-N", "", "-q"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode != 0:
-                    error_msg = result.stderr or result.stdout or "Unknown error"
-                    return JsonResponse({"error": f"Failed to generate key pair: {error_msg}"}, status=500)
-            
-            # Read the keys
-            with open(private_key_path, 'r') as f:
-                private_key = f.read()
-            with open(public_key_path, 'r') as f:
-                public_key = f.read()
-            
-            return JsonResponse({
-                "key_name": key_name,
-                "private_key": private_key,
-                "public_key": public_key
-            })
-    except FileNotFoundError:
-        return JsonResponse({"error": "ssh-keygen not found. Please install OpenSSH."}, status=500)
-    except subprocess.TimeoutExpired:
-        return JsonResponse({"error": "Key generation timed out."}, status=500)
+        # Generate RSA key pair (4096 bits for security)
+        private_key_obj = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=4096,
+            backend=default_backend()
+        )
+        
+        # Serialize private key to PEM format (no password)
+        private_key = private_key_obj.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode('utf-8')
+        
+        # Serialize public key to OpenSSH format
+        public_key_obj = private_key_obj.public_key()
+        public_key = public_key_obj.public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        ).decode('utf-8')
+        
+        # Add key name as comment to public key
+        public_key = f"{public_key} {key_name}"
+        
+        return JsonResponse({
+            "key_name": key_name,
+            "private_key": private_key,
+            "public_key": public_key
+        })
+    except ImportError:
+        return JsonResponse({"error": "cryptography library not installed. Run: pip install cryptography"}, status=500)
     except Exception as exc:
         import traceback
         print(f"❌ Error generating key pair: {exc}")

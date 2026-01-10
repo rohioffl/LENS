@@ -1,12 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
-import './styles.css';
-import './dark-mode.css';
-import './fix-inputs.css';
+import SimpleApp from './SimpleApp.jsx';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <SimpleApp />
   </React.StrictMode>
 );
+
