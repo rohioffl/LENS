@@ -16,3 +16,5 @@ requests==2.31.0
 django-cors-headers==4.9.0
 gunicorn==20.1.0
 cryptography==42.0.0
+pymongo==4.6.1
+tqdm==4.66.1

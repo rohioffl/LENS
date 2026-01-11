@@ -431,6 +431,24 @@ const Dashboard = () => {
   const [ecsManifestError, setEcsManifestError] = useState('');
   const [ecsManifestArtifacts, setEcsManifestArtifacts] = useState([]);
 
+  // DocumentDB to Atlas Migration state
+  const [docdbAtlasUri, setDocdbAtlasUri] = useState('');
+  const [docdbDocdbUri, setDocdbDocdbUri] = useState('');
+  const [docdbMode, setDocdbMode] = useState('fresh');
+  const [docdbAction, setDocdbAction] = useState('migrate');
+  const [docdbDatabases, setDocdbDatabases] = useState('');
+  const [docdbNumWorkers, setDocdbNumWorkers] = useState(8);
+  const [docdbNumParallelCollections, setDocdbNumParallelCollections] = useState(4);
+  const [docdbTimestampField, setDocdbTimestampField] = useState('auto');
+  const [docdbMatchIndexNames, setDocdbMatchIndexNames] = useState(false);
+  const [docdbDeleteLocalAfter, setDocdbDeleteLocalAfter] = useState(false);
+  const [docdbDryRun, setDocdbDryRun] = useState(false);
+  const [docdbInitSource, setDocdbInitSource] = useState('atlas');
+  const [docdbLogs, setDocdbLogs] = useState('');
+  const [docdbError, setDocdbError] = useState('');
+  const [docdbArtifacts, setDocdbArtifacts] = useState([]);
+  const [docdbLoading, setDocdbLoading] = useState(false);
+
   const [eksClusters, setEksClusters] = useState([]);
   const [eksClusterLoading, setEksClusterLoading] = useState(false);
   const [eksClusterError, setEksClusterError] = useState('');
@@ -2678,6 +2696,17 @@ const Dashboard = () => {
           <h2>Box AWS Terraform Generator</h2>
           <p>Generate Terraform modules for AWS services using boto3 to fetch real AWS data (AMIs, instance types, etc.).</p>
           <button onClick={() => setView('box_project_aws')}>Build AWS Project</button>
+        </motion.div>
+        <motion.div
+          className="task-card"
+          variants={cardVariants}
+          custom={14}
+          whileHover="hover"
+          whileTap={{ scale: 0.98 }}
+        >
+          <h2>DocumentDB to Atlas Migration</h2>
+          <p>Migrate data from AWS DocumentDB to MongoDB Atlas with support for fresh and incremental sync modes.</p>
+          <button onClick={() => setView('docdb_migration')}>Start Migration</button>
         </motion.div>
         </motion.div>
       )}
@@ -8273,6 +8302,533 @@ const Dashboard = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* DocumentDB to Atlas Migration */}
+      {view === 'docdb_migration' && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          style={{ marginTop: '20px' }}
+        >
+          <fieldset>
+            <legend>DocumentDB to Atlas Migration</legend>
+            
+            <div style={{ 
+              marginBottom: '25px',
+              padding: '20px',
+              backgroundColor: darkMode ? '#1e293b' : '#eff6ff',
+              border: darkMode ? '1px solid #3b82f6' : '1px solid #93c5fd',
+              borderRadius: '8px',
+              borderLeft: darkMode ? '4px solid #3b82f6' : '4px solid #2563eb'
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                marginBottom: '12px',
+                gap: '10px'
+              }}>
+                <span style={{ fontSize: '24px' }}>🔄</span>
+                <h3 style={{ 
+                  margin: 0, 
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  color: darkMode ? '#60a5fa' : '#1e40af'
+                }}>
+                  What does this do?
+                </h3>
+              </div>
+              <p style={{ 
+                margin: '0 0 12px 0',
+                color: darkMode ? '#cbd5e1' : '#1f2937',
+                lineHeight: '1.6'
+              }}>
+                This tool migrates data from AWS DocumentDB to MongoDB Atlas with support for:
+              </p>
+              <ul style={{ 
+                marginLeft: '20px', 
+                marginBottom: 0,
+                color: darkMode ? '#cbd5e1' : '#374151',
+                lineHeight: '1.8'
+              }}>
+                <li><strong style={{ color: darkMode ? '#e2e8f0' : '#111827' }}>Fresh Migration:</strong> Complete data replacement (drops existing collections)</li>
+                <li><strong style={{ color: darkMode ? '#e2e8f0' : '#111827' }}>Incremental Migration:</strong> Non-destructive sync of changes since last run</li>
+                <li><strong style={{ color: darkMode ? '#e2e8f0' : '#111827' }}>Index Reconciliation:</strong> Automatically recreates indexes to match source</li>
+              </ul>
+            </div>
+
+            <div style={{
+              marginBottom: '20px',
+              paddingBottom: '20px',
+              borderBottom: darkMode ? '2px solid #334155' : '2px solid #e5e7eb'
+            }}>
+              <h3 style={{
+                fontSize: '16px',
+                fontWeight: 'bold',
+                marginBottom: '15px',
+                color: darkMode ? '#e2e8f0' : '#111827',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span>⚡</span> Migration Action
+              </h3>
+              <label>
+                Action
+                <select value={docdbAction} onChange={(e) => setDocdbAction(e.target.value)}>
+                  <option value="migrate">Run Migration</option>
+                  <option value="init_last_run">Initialize Last Run Timestamp</option>
+                  <option value="estimate">Estimate Migration Size & Time</option>
+                </select>
+              </label>
+            </div>
+
+            <div style={{
+              marginBottom: '20px',
+              paddingBottom: '20px',
+              borderBottom: darkMode ? '2px solid #334155' : '2px solid #e5e7eb'
+            }}>
+              <h3 style={{
+                fontSize: '16px',
+                fontWeight: 'bold',
+                marginBottom: '15px',
+                color: darkMode ? '#e2e8f0' : '#111827',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span>🔌</span> Connection Strings
+              </h3>
+              <label>
+                Atlas Connection String
+              <input
+                type="text"
+                value={docdbAtlasUri}
+                onChange={(e) => setDocdbAtlasUri(e.target.value)}
+                placeholder="mongodb+srv://username:password@cluster.mongodb.net/"
+              />
+              <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                Your MongoDB Atlas connection string
+              </small>
+            </label>
+
+            <label>
+              DocumentDB Connection String
+              <input
+                type="text"
+                value={docdbDocdbUri}
+                onChange={(e) => setDocdbDocdbUri(e.target.value)}
+                placeholder="mongodb://username:password@docdb-cluster.region.docdb.amazonaws.com:27017/"
+              />
+              <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                Your DocumentDB (read-only) connection string
+              </small>
+            </label>
+            </div>
+
+            {docdbAction === 'migrate' && (
+              <>
+                <div style={{
+                  marginBottom: '20px',
+                  paddingBottom: '20px',
+                  borderBottom: darkMode ? '2px solid #334155' : '2px solid #e5e7eb'
+                }}>
+                  <h3 style={{
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    marginBottom: '15px',
+                    color: darkMode ? '#e2e8f0' : '#111827',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <span>⚙️</span> Migration Configuration
+                  </h3>
+                  <label>
+                    Migration Mode
+                  <select value={docdbMode} onChange={(e) => setDocdbMode(e.target.value)}>
+                    <option value="fresh">Fresh Migration (drop & reload)</option>
+                    <option value="incremental">Incremental Migration (non-destructive)</option>
+                  </select>
+                  <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                    {docdbMode === 'fresh' 
+                      ? '⚠️ This will drop existing collections in Atlas before migrating'
+                      : '✅ This will only insert/update changed documents since last run'
+                    }
+                  </small>
+                </label>
+
+                <label>
+                  Databases to Migrate
+                  <textarea
+                    value={docdbDatabases}
+                    onChange={(e) => setDocdbDatabases(e.target.value)}
+                    placeholder="Leave empty to migrate all databases, or enter one database name per line:"
+                    rows={4}
+                    style={{
+                      fontFamily: 'monospace',
+                      fontSize: '13px'
+                    }}
+                  />
+                  <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                    Leave empty to migrate all databases (except admin, local, config)
+                  </small>
+                </label>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                  <label>
+                    Insertion Workers per Collection
+                    <input
+                      type="number"
+                      min="1"
+                      max="32"
+                      value={docdbNumWorkers}
+                      onChange={(e) => setDocdbNumWorkers(parseInt(e.target.value) || 8)}
+                    />
+                  </label>
+
+                  <label>
+                    Parallel Collections
+                    <input
+                      type="number"
+                      min="1"
+                      max="16"
+                      value={docdbNumParallelCollections}
+                      onChange={(e) => setDocdbNumParallelCollections(parseInt(e.target.value) || 4)}
+                    />
+                  </label>
+                </div>
+
+                {docdbMode === 'incremental' && (
+                  <label>
+                    Timestamp Field
+                    <input
+                      type="text"
+                      value={docdbTimestampField}
+                      onChange={(e) => setDocdbTimestampField(e.target.value)}
+                      placeholder="auto"
+                    />
+                    <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                      Field used for incremental sync (default: auto-detect from updatedAt, createdAt, etc.)
+                    </small>
+                  </label>
+                )}
+                </div>
+
+                <div style={{ 
+                  marginTop: '20px', 
+                  padding: '20px', 
+                  backgroundColor: darkMode ? '#1e293b' : '#f3f4f6', 
+                  borderRadius: '8px',
+                  border: darkMode ? '1px solid #334155' : '1px solid #e5e7eb',
+                  width: '100%',
+                  boxSizing: 'border-box'
+                }}>
+                  <h4 style={{ 
+                    marginTop: 0, 
+                    marginBottom: '15px',
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    color: darkMode ? '#e2e8f0' : '#1f2937'
+                  }}>
+                    ⚙️ Advanced Options
+                  </h4>
+                  
+                  <label style={{ 
+                    display: 'flex', 
+                    alignItems: 'flex-start', 
+                    marginBottom: '15px', 
+                    cursor: 'pointer',
+                    padding: '10px',
+                    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+                    borderRadius: '6px',
+                    border: darkMode ? '1px solid #334155' : '1px solid #e5e7eb',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={docdbMatchIndexNames}
+                      onChange={(e) => setDocdbMatchIndexNames(e.target.checked)}
+                      style={{ 
+                        marginRight: '12px',
+                        marginTop: '3px',
+                        flexShrink: 0,
+                        width: 'auto',
+                        height: 'auto',
+                        padding: 0
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ 
+                        fontWeight: '600',
+                        marginBottom: '4px',
+                        color: darkMode ? '#e2e8f0' : '#111827',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Match Index Names
+                      </div>
+                      <div style={{ 
+                        fontSize: '13px',
+                        color: darkMode ? '#94a3b8' : '#6b7280',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Recreate indexes to match DocumentDB names exactly
+                      </div>
+                    </div>
+                  </label>
+
+                  <label style={{ 
+                    display: 'flex', 
+                    alignItems: 'flex-start', 
+                    marginBottom: '15px', 
+                    cursor: 'pointer',
+                    padding: '10px',
+                    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+                    borderRadius: '6px',
+                    border: darkMode ? '1px solid #334155' : '1px solid #e5e7eb',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={docdbDeleteLocalAfter}
+                      onChange={(e) => setDocdbDeleteLocalAfter(e.target.checked)}
+                      style={{ 
+                        marginRight: '12px',
+                        marginTop: '3px',
+                        flexShrink: 0,
+                        width: 'auto',
+                        height: 'auto',
+                        padding: 0
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ 
+                        fontWeight: '600',
+                        marginBottom: '4px',
+                        color: darkMode ? '#e2e8f0' : '#111827',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Delete Local Dump After Migration
+                      </div>
+                      <div style={{ 
+                        fontSize: '13px',
+                        color: darkMode ? '#94a3b8' : '#6b7280',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Automatically clean up local dump files after successful migration
+                      </div>
+                    </div>
+                  </label>
+
+                  <label style={{ 
+                    display: 'flex', 
+                    alignItems: 'flex-start', 
+                    cursor: 'pointer',
+                    padding: '10px',
+                    backgroundColor: darkMode ? '#0f172a' : '#ffffff',
+                    borderRadius: '6px',
+                    border: darkMode ? '1px solid #334155' : '1px solid #e5e7eb',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={docdbDryRun}
+                      onChange={(e) => setDocdbDryRun(e.target.checked)}
+                      style={{ 
+                        marginRight: '12px',
+                        marginTop: '3px',
+                        flexShrink: 0,
+                        width: 'auto',
+                        height: 'auto',
+                        padding: 0
+                      }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ 
+                        fontWeight: '600',
+                        marginBottom: '4px',
+                        color: darkMode ? '#e2e8f0' : '#111827',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Dry Run
+                      </div>
+                      <div style={{ 
+                        fontSize: '13px',
+                        color: darkMode ? '#94a3b8' : '#6b7280',
+                        wordWrap: 'break-word',
+                        whiteSpace: 'normal',
+                        lineHeight: '1.5'
+                      }}>
+                        Validate configuration without executing any destructive operations
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              </>
+            )}
+
+            {docdbAction === 'init_last_run' && (
+              <div style={{
+                marginBottom: '20px',
+                paddingBottom: '20px',
+                borderBottom: darkMode ? '2px solid #334155' : '2px solid #e5e7eb'
+              }}>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  marginBottom: '15px',
+                  color: darkMode ? '#e2e8f0' : '#111827',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <span>🕐</span> Timestamp Initialization
+                </h3>
+                <label>
+                  Initialize From
+                  <select value={docdbInitSource} onChange={(e) => setDocdbInitSource(e.target.value)}>
+                    <option value="atlas">Atlas (recommended after first migration)</option>
+                    <option value="docdb">DocumentDB</option>
+                  </select>
+                  <small style={{ display: 'block', marginTop: '5px', color: darkMode ? '#94a3b8' : '#6b7280' }}>
+                    Scan the selected cluster to find the latest timestamp and initialize the state file
+                  </small>
+                </label>
+              </div>
+            )}
+
+            <div style={{
+              marginTop: '30px',
+              paddingTop: '20px',
+              borderTop: darkMode ? '2px solid #334155' : '2px solid #e5e7eb',
+              display: 'flex',
+              justifyContent: 'center'
+            }}>
+              <button
+                onClick={async () => {
+                  setDocdbLoading(true);
+                  setDocdbLogs('');
+                  setDocdbError('');
+                  setDocdbArtifacts([]);
+
+                  try {
+                    const payload = {
+                      task_id: 'docdb_to_atlas_migration',
+                      data: {
+                        atlas_uri: docdbAtlasUri,
+                        docdb_uri: docdbDocdbUri,
+                        mode: docdbMode,
+                        action: docdbAction,
+                        databases: docdbDatabases,
+                        num_workers: docdbNumWorkers,
+                        num_parallel_collections: docdbNumParallelCollections,
+                        timestamp_field: docdbTimestampField,
+                        match_index_names: docdbMatchIndexNames,
+                        delete_local_after: docdbDeleteLocalAfter,
+                        dry_run: docdbDryRun,
+                        init_source: docdbInitSource,
+                      },
+                    };
+
+                    const result = await runStreamingTask('/api/tasks/run-stream/', payload, (msg) => {
+                      setDocdbLogs((prev) => prev + msg + '\n');
+                    });
+
+                    if (result.artifacts) {
+                      setDocdbArtifacts(createDownloadEntries(result.artifacts));
+                    }
+                    if (result.message) {
+                      setDocdbLogs((prev) => prev + '\n✅ ' + result.message + '\n');
+                    }
+                  } catch (err) {
+                    setDocdbError(err.message || String(err));
+                    if (err.logs) {
+                      setDocdbLogs(err.logs.join('\n'));
+                    }
+                  } finally {
+                    setDocdbLoading(false);
+                  }
+                }}
+                disabled={docdbLoading || !docdbAtlasUri || !docdbDocdbUri}
+                style={{
+                  padding: '14px 32px',
+                  backgroundColor: docdbLoading || !docdbAtlasUri || !docdbDocdbUri ? '#9ca3af' : '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: docdbLoading || !docdbAtlasUri || !docdbDocdbUri ? 'not-allowed' : 'pointer',
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  boxShadow: docdbLoading || !docdbAtlasUri || !docdbDocdbUri ? 'none' : '0 4px 6px rgba(59, 130, 246, 0.3)',
+                  transition: 'all 0.2s ease',
+                  minWidth: '200px'
+                }}
+              >
+                {docdbLoading ? '⏳ Running...' : 
+                  docdbAction === 'migrate' ? '🚀 Start Migration' :
+                  docdbAction === 'init_last_run' ? '🔄 Initialize Timestamp' :
+                  '📊 Estimate'}
+              </button>
+            </div>
+
+            {docdbLogs && (
+              <div style={{ marginTop: '20px' }}>
+                <h3>Migration Logs</h3>
+                <pre style={{
+                  padding: '15px',
+                  borderRadius: '6px',
+                  maxHeight: '400px',
+                  overflow: 'auto',
+                  fontSize: '13px',
+                  lineHeight: '1.5'
+                }}>
+                  {docdbLogs}
+                </pre>
+              </div>
+            )}
+
+            {docdbError && (
+              <div style={{
+                marginTop: '20px',
+                padding: '15px',
+                backgroundColor: darkMode ? '#7f1d1d' : '#fee2e2',
+                border: darkMode ? '1px solid #991b1b' : '1px solid #fecaca',
+                borderRadius: '6px',
+                color: darkMode ? '#fecaca' : '#991b1b'
+              }}>
+                <h4 style={{ marginTop: 0 }}>❌ Error</h4>
+                <p style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>{docdbError}</p>
+              </div>
+            )}
+
+            {docdbArtifacts.length > 0 && (
+              <div style={{ marginTop: '20px' }}>
+                <h3>📦 Download Migration Artifacts</h3>
+                {docdbArtifacts.map((item, idx) => (
+                  <div key={idx} style={{ marginBottom: '10px' }}>
+                    <a href={item.url} download={item.filename} className="download-link">
+                      💾 Download {item.filename}
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </fieldset>
+        </motion.div>
       )}
     </div>
   );
