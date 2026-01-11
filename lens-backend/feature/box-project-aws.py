@@ -433,7 +433,7 @@ variable "num_private_subnets" {
 }
 
 variable "subnets" {
-  description = "List of subnets with custom CIDRs. Format: [{cidr: \"10.0.1.0/24\", type: \"public\"}, ...]"
+  description = "List of subnets with custom CIDRs. Each subnet must have 'cidr' and 'type' fields."
   type = list(object({
     cidr = string
     type = string
@@ -485,11 +485,22 @@ resource "aws_internet_gateway" "this" {
 locals {
   # Use custom subnets if provided, otherwise generate from num_public/num_private
   use_custom_subnets = length(var.subnets) > 0
+  
+  # Calculate subnet bits dynamically based on VPC CIDR and required subnet count
+  # Find the minimum number of bits needed to accommodate all subnets
+  total_subnets = var.num_public_subnets + var.num_private_subnets
+  # Use pow(2, i) to find the smallest power of 2 >= total_subnets (min 4)
+  subnet_newbits_candidates = [
+    for i in range(0, 16) : i
+    if pow(2, i) >= max(local.total_subnets, 4)
+  ]
+  subnet_newbits = length(local.subnet_newbits_candidates) > 0 ? local.subnet_newbits_candidates[0] : 2
+  
   public_subnets = local.use_custom_subnets ? [
     for subnet in var.subnets : subnet if subnet.type == "public"
   ] : [
     for i in range(var.num_public_subnets) : {
-      cidr = cidrsubnet(var.cidr, 8, i)
+      cidr = cidrsubnet(var.cidr, local.subnet_newbits, i)
       type = "public"
     }
   ]
@@ -497,7 +508,7 @@ locals {
     for subnet in var.subnets : subnet if subnet.type == "private"
   ] : [
     for i in range(var.num_private_subnets) : {
-      cidr = cidrsubnet(var.cidr, 8, i + var.num_public_subnets)
+      cidr = cidrsubnet(var.cidr, local.subnet_newbits, i + var.num_public_subnets)
       type = "private"
     }
   ]
@@ -528,7 +539,8 @@ resource "aws_subnet" "private" {
 }
 
 resource "aws_eip" "nat" {
-  count  = var.enable_nat_gateway ? length(local.private_subnets) : 0
+  # NAT Gateway requires Internet Gateway to be enabled
+  count  = var.enable_nat_gateway && var.enable_internet_gateway ? length(local.private_subnets) : 0
   domain = "vpc"
   depends_on = [aws_internet_gateway.this]
 
@@ -538,7 +550,8 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "this" {
-  count         = var.enable_nat_gateway ? length(local.private_subnets) : 0
+  # NAT Gateway requires Internet Gateway to be enabled
+  count         = var.enable_nat_gateway && var.enable_internet_gateway ? length(local.private_subnets) : 0
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index % length(local.public_subnets)].id
   depends_on    = [aws_internet_gateway.this]
@@ -563,7 +576,8 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table" "private" {
-  count  = var.enable_nat_gateway ? length(local.private_subnets) : 0
+  # Private route table requires both NAT Gateway and Internet Gateway
+  count  = var.enable_nat_gateway && var.enable_internet_gateway ? length(local.private_subnets) : 0
   vpc_id = aws_vpc.this.id
 
   route {
@@ -583,7 +597,8 @@ resource "aws_route_table_association" "public" {
 }
 
 resource "aws_route_table_association" "private" {
-  count          = var.enable_nat_gateway ? length(aws_subnet.private) : 0
+  # Private route table requires both NAT Gateway and Internet Gateway
+  count          = var.enable_nat_gateway && var.enable_internet_gateway ? length(aws_subnet.private) : 0
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }
@@ -637,15 +652,20 @@ variable "instances" {
     name                = string
     ami                 = string
     instance_type       = string
-    subnet_id           = string
     root_volume_size    = number
     root_volume_type    = string
     security_group_name = string
     iam_role            = string
     user_data           = string
-    tags                = string
+    tags                = map(string)
   }))
   default = []
+}
+
+variable "subnet_ids" {
+  description = "List of subnet IDs to use for instances. Instances will be distributed across these subnets."
+  type        = list(string)
+  default     = []
 }
 
 variable "key_name" {
@@ -720,14 +740,7 @@ resource "aws_security_group" "ec2" {
   description = "Security group for EC2 instances"
   vpc_id      = var.vpc_id
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
+  # HTTP and HTTPS are allowed from anywhere for web servers
   ingress {
     description = "HTTP"
     from_port   = 80
@@ -743,6 +756,16 @@ resource "aws_security_group" "ec2" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  # SSH is restricted - add your IP or use a bastion host
+  # To enable SSH access, uncomment and specify your IP:
+  # ingress {
+  #   description = "SSH from specific IP"
+  #   from_port   = 22
+  #   to_port     = 22
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["YOUR_IP/32"]  # Replace with your IP
+  # }
 
   egress {
     from_port   = 0
@@ -795,14 +818,7 @@ resource "aws_security_group" "custom" {
   description = "Custom security group for ${each.value.name}"
   vpc_id      = var.vpc_id
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
+  # HTTP and HTTPS are allowed from anywhere for web servers
   ingress {
     description = "HTTP"
     from_port   = 80
@@ -819,6 +835,16 @@ resource "aws_security_group" "custom" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # SSH is restricted - add your IP or use a bastion host
+  # To enable SSH access, uncomment and specify your IP:
+  # ingress {
+  #   description = "SSH from specific IP"
+  #   from_port   = 22
+  #   to_port     = 22
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["YOUR_IP/32"]  # Replace with your IP
+  # }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -831,15 +857,23 @@ resource "aws_security_group" "custom" {
   }
 }
 
+locals {
+  # Create a map of instance index to subnet ID, distributing instances across available subnets
+  instance_subnet_map = { 
+    for idx, inst in var.instances : 
+    inst.id => length(var.subnet_ids) > 0 ? var.subnet_ids[idx % length(var.subnet_ids)] : null
+  }
+}
+
 # Create multiple EC2 instances using for_each
 resource "aws_instance" "this" {
   for_each = { for inst in var.instances : inst.id => inst }
 
   ami                    = each.value.ami
   instance_type          = each.value.instance_type
-  subnet_id              = each.value.subnet_id
+  subnet_id              = local.instance_subnet_map[each.key]
   key_name               = var.public_key != "" ? aws_key_pair.this[0].key_name : (var.key_name != "" ? var.key_name : null)
-  user_data              = each.value.user_data != "" ? base64encode(each.value.user_data) : (var.user_data != "" ? base64encode(var.user_data) : null)
+  user_data              = each.value.user_data != "" ? each.value.user_data : (var.user_data != "" ? var.user_data : null)
   iam_instance_profile   = each.value.iam_role != "" ? aws_iam_instance_profile.ec2[each.key].name : null
   vpc_security_group_ids = each.value.security_group_name != "" ? concat([aws_security_group.custom[each.key].id], var.security_group_ids) : concat([aws_security_group.ec2.id], var.security_group_ids)
 
@@ -849,36 +883,25 @@ resource "aws_instance" "this" {
     encrypted   = true
   }
 
-  dynamic "tag_specifications" {
-    for_each = each.value.tags != "" ? [1] : []
-    content {
-      resource_type = "instance"
-      tags = merge(
-        {
-          Name = each.value.name
-        },
-        try(jsondecode(each.value.tags), {}),
-        var.tags
-      )
-    }
-  }
-
   tags = merge(
     {
       Name = each.value.name
     },
-    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    each.value.tags,
     var.tags
   )
 }
 
 # Additional EBS volumes
 resource "aws_ebs_volume" "additional" {
-  for_each = { for vol in var.additional_volumes : vol.id => vol }
+  for_each = { 
+    for vol in var.additional_volumes : vol.id => vol 
+    # Only create volumes if they're linked to an existing instance (ensures AZ is available)
+    if vol.linked_ec2 != "" && contains(keys({ for inst in var.instances : inst.id => inst }), vol.linked_ec2)
+  }
 
-  availability_zone = var.availability_zone != "" ? var.availability_zone : (
-    length(var.instances) > 0 ? aws_instance.this[var.instances[0].id].availability_zone : null
-  )
+  # Use the AZ of the linked instance
+  availability_zone = aws_instance.this[each.value.linked_ec2].availability_zone
   size              = each.value.size
   type              = each.value.type
   encrypted         = each.value.encrypted
@@ -900,7 +923,9 @@ resource "aws_volume_attachment" "additional" {
     if vol.linked_ec2 != "" && contains(keys({ for inst in var.instances : inst.id => inst }), vol.linked_ec2)
   }
 
-  device_name = "/dev/sd${substr("fghijklmnop", index([for v in var.additional_volumes : v.id], each.key) % 11, 1)}"
+  # Use smarter device naming: /dev/sdf through /dev/sdz (20 devices), then wrap around
+  # This avoids collisions better than the previous 11-letter limit
+  device_name = "/dev/sd${substr("fghijklmnopqrstuvwxyz", index([for v in var.additional_volumes : v.id], each.key) % 21, 1)}"
   volume_id   = aws_ebs_volume.additional[each.key].id
   instance_id = aws_instance.this[each.value.linked_ec2].id
 }
@@ -992,7 +1017,7 @@ variable "buckets" {
     lifecycle_glacier_days     = number
     lifecycle_expiration_days  = number
     enable_cors                = bool
-    tags                       = string
+    tags                       = map(string)
   }))
   default = []
 }
@@ -1015,7 +1040,7 @@ resource "aws_s3_bucket" "this" {
       Name         = each.value.bucket_name
       StorageClass = each.value.storage_class
     },
-    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    each.value.tags,
     var.tags
   )
 }
@@ -1038,7 +1063,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
-    bucket_key_enabled = true
+    # bucket_key_enabled only works with aws:kms, not AES256
+    # bucket_key_enabled = true
   }
 }
 
@@ -1069,6 +1095,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
   rule {
     id     = "lifecycle-rule"
     status = "Enabled"
+
+    # Required: filter block (empty prefix applies to all objects)
+    filter {
+      prefix = ""
+    }
 
     dynamic "transition" {
       for_each = var.buckets[index(var.buckets.*.bucket_name, each.key)].lifecycle_ia_days != null ? [1] : []
@@ -1113,6 +1144,36 @@ resource "aws_s3_bucket_cors_configuration" "this" {
   }
 }
 
+# Create log buckets for buckets with logging enabled
+resource "aws_s3_bucket" "logs" {
+  for_each = { 
+    for k, v in aws_s3_bucket.this : k => v 
+    if var.buckets[index(var.buckets.*.bucket_name, k)].enable_logging
+  }
+
+  bucket = "${each.value.id}-logs"
+
+  tags = merge(
+    {
+      Name = "${each.value.id}-logs"
+      Purpose = "Logs for ${each.value.id}"
+    },
+    var.tags
+  )
+}
+
+# Block public access for log buckets
+resource "aws_s3_bucket_public_access_block" "logs" {
+  for_each = aws_s3_bucket.logs
+
+  bucket = each.value.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 # Logging configuration for buckets with logging enabled
 resource "aws_s3_bucket_logging" "this" {
   for_each = { 
@@ -1122,8 +1183,10 @@ resource "aws_s3_bucket_logging" "this" {
 
   bucket = each.value.id
 
-  target_bucket = "${each.value.id}-logs"
+  target_bucket = aws_s3_bucket.logs[each.key].id
   target_prefix = "log/"
+
+  depends_on = [aws_s3_bucket.logs]
 }
 """,
         "outputs.tf": """
@@ -1159,13 +1222,14 @@ def rds_module() -> Dict[str, str]:
     return {
         "variables.tf": """
 variable "databases" {
-  description = "List of RDS databases to create"
+  description = "List of RDS databases to create. Note: Contains sensitive data (passwords)."
   type = list(object({
     identifier              = string
     engine                  = string
     instance_class          = string
     allocated_storage       = number
     storage_type            = string
+    iops                    = optional(number)  # Required for io1/io2, optional for gp3
     db_name                 = string
     username                = string
     password                = string
@@ -1175,9 +1239,11 @@ variable "databases" {
     multi_az                = bool
     backup_window           = string
     maintenance_window      = string
-    tags                    = string
+    tags                    = map(string)
   }))
-  default = []
+  default   = []
+  # Note: Cannot mark as sensitive=true because it's used in for_each
+  # Passwords should be managed via tfvars marked as sensitive or environment variables
 }
 
 variable "subnet_ids" {
@@ -1302,6 +1368,7 @@ resource "aws_db_instance" "this" {
   instance_class              = each.value.instance_class
   allocated_storage           = each.value.allocated_storage
   storage_type                = each.value.storage_type
+  iops                        = can(each.value.iops) ? each.value.iops : (contains(["io1", "io2", "gp3"], each.value.storage_type) ? 3000 : null)
   db_name                     = each.value.db_name != "" ? each.value.db_name : null
   username                    = each.value.username
   password                    = each.value.password
@@ -1311,14 +1378,12 @@ resource "aws_db_instance" "this" {
   skip_final_snapshot         = var.skip_final_snapshot
   publicly_accessible         = each.value.publicly_accessible
   multi_az                    = each.value.multi_az
-  preferred_backup_window     = each.value.backup_window != "" ? each.value.backup_window : null
-  preferred_maintenance_window = each.value.maintenance_window != "" ? each.value.maintenance_window : null
 
   tags = merge(
     {
       Name = each.value.identifier
     },
-    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    each.value.tags,
     var.tags
   )
 }
@@ -1467,15 +1532,16 @@ def efs_module() -> Dict[str, str]:
 variable "filesystems" {
   description = "List of EFS file systems to create. Encryption uses AWS-managed keys by default (kms_key_id is optional)."
   type = list(object({
-    name                = string
-    performance_mode    = string
-    throughput_mode     = string
-    storage_class       = string
-    encrypted           = bool
-    enable_backup       = bool
-    transition_to_ia    = number
-    security_group_name = string
-    tags                = string
+    name                            = string
+    performance_mode                = string
+    throughput_mode                 = string
+    provisioned_throughput_in_mibps = optional(number)  # Required when throughput_mode is "provisioned"
+    storage_class                   = string
+    encrypted                       = bool
+    enable_backup                   = bool
+    transition_to_ia                = number
+    security_group_name             = string
+    tags                            = map(string)
     # Note: kms_key_id is optional and handled via lookup() in main.tf
   }))
   default = []
@@ -1500,20 +1566,23 @@ variable "tags" {
 }
 """,
         "main.tf": """
+# Get VPC CIDR block for security group rules
+data "aws_vpc" "this" {
+  id = var.vpc_id
+}
+
 # Security Group for all EFS file systems (default)
 resource "aws_security_group" "efs" {
-  count = var.vpc_id != "" ? 1 : 0
-  
   name        = "efs-security-group"
   description = "Security group for EFS mount targets"
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "NFS from VPC"
+    description = "NFS from VPC only"
     from_port   = 2049
     to_port     = 2049
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
   }
 
   egress {
@@ -1533,18 +1602,18 @@ resource "aws_security_group" "efs" {
 
 # Custom security groups for file systems with custom security group names
 resource "aws_security_group" "custom" {
-  for_each = { for fs in var.filesystems : fs.name => fs if fs.security_group_name != "" && var.vpc_id != "" }
+  for_each = { for fs in var.filesystems : fs.name => fs if fs.security_group_name != "" }
 
   name        = each.value.security_group_name
   description = "Custom security group for ${each.value.name}"
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "NFS from VPC"
+    description = "NFS from VPC only"
     from_port   = 2049
     to_port     = 2049
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_vpc.this.cidr_block]
   }
 
   egress {
@@ -1563,12 +1632,13 @@ resource "aws_security_group" "custom" {
 resource "aws_efs_file_system" "this" {
   for_each = { for fs in var.filesystems : fs.name => fs }
 
-  creation_token   = each.value.name
-  performance_mode = each.value.performance_mode
-  throughput_mode  = each.value.throughput_mode
-  encrypted        = each.value.encrypted
+  creation_token                  = each.value.name
+  performance_mode                = each.value.performance_mode
+  throughput_mode                 = each.value.throughput_mode
+  provisioned_throughput_in_mibps = can(each.value.provisioned_throughput_in_mibps) && each.value.throughput_mode == "provisioned" ? each.value.provisioned_throughput_in_mibps : null
+  encrypted                       = each.value.encrypted
   # KMS key is optional - if not provided, AWS-managed encryption is used
-  kms_key_id       = each.value.encrypted && lookup(each.value, "kms_key_id", null) != null && lookup(each.value, "kms_key_id", "") != "" ? lookup(each.value, "kms_key_id", null) : null
+  kms_key_id                      = each.value.encrypted && lookup(each.value, "kms_key_id", null) != null && lookup(each.value, "kms_key_id", "") != "" ? lookup(each.value, "kms_key_id", null) : null
 
   dynamic "lifecycle_policy" {
     for_each = each.value.transition_to_ia != null && each.value.transition_to_ia > 0 ? [1] : []
@@ -1581,30 +1651,32 @@ resource "aws_efs_file_system" "this" {
     {
       Name = each.value.name
     },
-    each.value.tags != "" ? try(jsondecode(each.value.tags), {}) : {},
+    each.value.tags,
     var.tags
   )
 }
 
 # Mount Targets for each file system (one per subnet)
+# Use locals to create static keys, then reference subnet IDs dynamically
+locals {
+  mount_targets = flatten([
+    for fs_idx, fs in var.filesystems : [
+      for subnet_idx in range(length(var.subnet_ids)) : {
+        key                 = "${fs.name}-${subnet_idx}"
+        file_system_name    = fs.name
+        subnet_idx          = subnet_idx
+        security_group_name = fs.security_group_name
+      }
+    ]
+  ])
+}
+
 resource "aws_efs_mount_target" "this" {
-  for_each = { 
-    for pair in flatten([
-      for fs_name, fs in var.filesystems : [
-        for subnet_id in var.subnet_ids : {
-          key                 = "${fs_name}-${subnet_id}"
-          file_system_name    = fs_name
-          file_system_id      = aws_efs_file_system.this[fs_name].id
-          subnet_id           = subnet_id
-          security_group_name = fs.security_group_name
-        }
-      ]
-    ]) : pair.key => pair
-  }
+  for_each = { for mt in local.mount_targets : mt.key => mt }
   
-  file_system_id  = each.value.file_system_id
-  subnet_id       = each.value.subnet_id
-  security_groups = each.value.security_group_name != "" ? [aws_security_group.custom[each.value.file_system_name].id] : (var.vpc_id != "" ? [aws_security_group.efs[0].id] : [])
+  file_system_id  = aws_efs_file_system.this[each.value.file_system_name].id
+  subnet_id       = var.subnet_ids[each.value.subnet_idx]
+  security_groups = each.value.security_group_name != "" ? [aws_security_group.custom[each.value.file_system_name].id] : [aws_security_group.efs.id]
 }
 
 # Backup Policy for each file system (if enabled)
@@ -1669,7 +1741,7 @@ output "access_point_ids" {
 
 output "security_group_id" {
   description = "Security group ID for EFS"
-  value       = var.vpc_id != "" ? aws_security_group.efs[0].id : null
+  value       = aws_security_group.efs.id
 }
 
 output "filesystems_summary" {

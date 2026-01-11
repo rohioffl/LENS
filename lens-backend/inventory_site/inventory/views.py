@@ -17,7 +17,7 @@ from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
-from feature import gcp_vpn, terraform_vpc, box_project
+from feature import gcp_vpn, terraform_vpc
 
 from inventory.services.task_registry import (
     TaskExecutionError,
@@ -36,6 +36,32 @@ ACCESS_DENIED_MARKERS = (
     "cluster access request is unauthorized",
     "requested credentials",
 )
+
+
+def _resolve_box_project_aws_script() -> Path:
+    current = Path(__file__).resolve()
+    for parent in [current] + list(current.parents):
+        candidate = parent / "feature" / "box-project-aws.py"
+        if candidate.exists():
+            return candidate
+        candidate = parent / "lens-backend" / "feature" / "box-project-aws.py"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "box-project-aws.py not found under feature/ or lens-backend/feature/"
+    )
+
+
+def _load_box_project_aws_module():
+    import importlib.util
+
+    box_aws_script = _resolve_box_project_aws_script()
+    spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load module spec from {box_aws_script}")
+    box_aws = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(box_aws)
+    return box_aws
 
 
 def inventory_request_view(request):
@@ -1322,26 +1348,6 @@ def aws_instance_docker_containers_api(request):
 
 
 @csrf_exempt
-def box_project_metadata_api(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Only POST is allowed."}, status=405)
-    try:
-        payload = json.loads(request.body or "{}")
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON payload."}, status=400)
-    cloud = (payload.get("cloud_provider") or "").lower()
-    if cloud not in box_project.TOP_SERVICES:
-        return JsonResponse({"error": "Unknown cloud provider."}, status=400)
-
-    services = [
-        {"id": svc, "label": label}
-        for svc, label in box_project.TOP_SERVICES.get(cloud, [])
-    ]
-    inputs = box_project.MODULE_INPUTS.get(cloud, {})
-    return JsonResponse({"services": services, "inputs": inputs})
-
-
-@csrf_exempt
 def box_project_aws_regions_api(request):
     """API endpoint to fetch AWS regions using boto3"""
     if request.method != "POST":
@@ -1359,16 +1365,14 @@ def box_project_aws_regions_api(request):
                 os.environ["AWS_SESSION_TOKEN"] = creds["session_token"]
         # If not provided, boto3 will use environment variables automatically
         
-        # Import box-project-aws functions
-        from pathlib import Path
-        import importlib.util
-        BACKEND_ROOT = Path(__file__).resolve().parents[2]
-        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
-        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
-        box_aws = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(box_aws)
-        
-        regions = box_aws.get_aws_regions()
+        ec2 = boto3.client("ec2")
+        response = ec2.describe_regions(AllRegions=True)
+        regions = [
+            region.get("RegionName", "")
+            for region in response.get("Regions", [])
+            if region.get("RegionName")
+        ]
+        regions = sorted(regions)
         return JsonResponse({"regions": regions})
     except Exception as exc:
         return JsonResponse({"error": f"Failed to fetch regions: {exc}"}, status=500)
@@ -1396,13 +1400,7 @@ def box_project_aws_ec2_data_api(request):
         # If not provided, boto3 will use environment variables automatically
         
         # Import box-project-aws functions
-        from pathlib import Path
-        import importlib.util
-        BACKEND_ROOT = Path(__file__).resolve().parents[2]
-        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
-        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
-        box_aws = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(box_aws)
+        box_aws = _load_box_project_aws_module()
         
         os_type = payload.get("os_type")  # Optional OS type filter
         os_version = payload.get("os_version")  # Optional OS version filter
@@ -1475,13 +1473,7 @@ def box_project_aws_rds_data_api(request):
         # If not provided, boto3 will use environment variables automatically
         
         # Import box-project-aws functions
-        from pathlib import Path
-        import importlib.util
-        BACKEND_ROOT = Path(__file__).resolve().parents[2]
-        box_aws_script = BACKEND_ROOT / "feature" / "box-project-aws.py"
-        spec = importlib.util.spec_from_file_location("box_project_aws", box_aws_script)
-        box_aws = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(box_aws)
+        box_aws = _load_box_project_aws_module()
         
         engines = box_aws.get_rds_engines(region)
         instance_classes = box_aws.get_rds_instance_classes(region, engine)

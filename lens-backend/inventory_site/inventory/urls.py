@@ -18,7 +18,6 @@ urlpatterns = [
     path("api/aws/ec2/docker/", views.aws_instance_docker_containers_api, name="aws_instance_docker_containers_api"),
     path("api/gcp/compute/instances/", views.gcp_compute_instances_api, name="gcp_compute_instances_api"),
     path("api/gcp/compute/docker/", views.gcp_instance_docker_containers_api, name="gcp_instance_docker_containers_api"),
-    path("api/box/metadata/", views.box_project_metadata_api, name="box_project_metadata_api"),
     path("api/box/aws/regions/", views.box_project_aws_regions_api, name="box_project_aws_regions_api"),
     path("api/box/aws/ec2-data/", views.box_project_aws_ec2_data_api, name="box_project_aws_ec2_data_api"),
     path("api/box/aws/rds-data/", views.box_project_aws_rds_data_api, name="box_project_aws_rds_data_api"),

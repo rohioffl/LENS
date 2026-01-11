@@ -10,18 +10,26 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from zipfile import ZipFile
 
-# Import the box-project-aws module
+# Path to the box-project-aws module
 REPO_ROOT = Path(__file__).resolve().parents[4]
 BOX_PROJECT_AWS_SCRIPT = REPO_ROOT / "lens-backend" / "feature" / "box-project-aws.py"
 
-# Import functions from box-project-aws
-try:
+def _get_box_aws_module():
+    """Lazy import of box-project-aws module to always get latest changes"""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("box_project_aws", BOX_PROJECT_AWS_SCRIPT)
-    box_aws = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(box_aws)
-except Exception as e:
-    raise ImportError(f"Failed to import box-project-aws module: {e}")
+    
+    # Always reload from file to get latest changes
+    try:
+        spec = importlib.util.spec_from_file_location("box_project_aws", BOX_PROJECT_AWS_SCRIPT)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load module spec from {BOX_PROJECT_AWS_SCRIPT}")
+        
+        box_aws = importlib.util.module_from_spec(spec)
+        sys.modules["box_project_aws"] = box_aws
+        spec.loader.exec_module(box_aws)
+        return box_aws
+    except Exception as e:
+        raise ImportError(f"Failed to import box-project-aws module: {e}")
 
 from inventory.forms import BoxProjectAwsForm
 from inventory.services.task_registry import (
@@ -50,7 +58,7 @@ def _configure_boto3(access_key: Optional[str], secret_key: Optional[str], sessi
         # 3. ~/.aws/config file
         # 4. IAM role (if running on EC2)
         # No need to set anything - boto3 will automatically find credentials
-        pass
+            pass
 
 
 def _zip_directory(path: Path) -> bytes:
@@ -88,14 +96,16 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
     # Use boto3 functions to get real AWS data if not provided
     if service == "vpc":
         subnets = service_config.get("subnets", [])
+        # Remove 'name' field from subnets to match module type (only cidr and type allowed)
+        subnets_clean = [{"cidr": s.get("cidr"), "type": s.get("type", "public")} for s in subnets if s.get("cidr")]
         # Count public and private subnets
-        num_public = sum(1 for s in subnets if s.get("type") == "public")
-        num_private = sum(1 for s in subnets if s.get("type") == "private")
+        num_public = sum(1 for s in subnets_clean if s.get("type") == "public")
+        num_private = sum(1 for s in subnets_clean if s.get("type") == "private")
         return {
             "cidr": service_config.get("cidr", "10.0.0.0/16"),
             "enable_dns_hostnames": service_config.get("enable_dns_hostnames", True),
             "enable_dns_support": service_config.get("enable_dns_support", True),
-            "subnets": subnets,  # New format: list of {cidr, type}
+            "subnets": subnets_clean,  # Clean format: list of {cidr, type} (no 'name')
             "num_public_subnets": num_public if num_public > 0 else service_config.get("num_public_subnets", 2),
             "num_private_subnets": num_private if num_private > 0 else service_config.get("num_private_subnets", 2),
             "enable_internet_gateway": service_config.get("enable_internet_gateway", True),
@@ -122,7 +132,7 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                     "name": inst_cfg.get("name", f"instance-{inst_id}"),
                     "ami": inst_cfg.get("ami", default_ami),
                     "instance_type": inst_cfg.get("instance_type", default_instance_type),
-                    "subnet_id": inst_cfg.get("subnet_id", default_subnet_id),
+                    # subnet_id removed - instances will be distributed across subnet_ids at module level
                     # Note: key_name and public_key are handled at root EC2 config level, not per-instance
                     "root_volume_size": inst_cfg.get("root_volume_size", default_root_volume_size),
                     "root_volume_type": inst_cfg.get("root_volume_type", default_root_volume_type),
@@ -138,9 +148,7 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                 "name": service_config.get("name", "box-ec2"),
                 "ami": default_ami,
                 "instance_type": default_instance_type,
-                "subnet_id": default_subnet_id,
-                "key_name": default_key_name,
-                "public_key": default_public_key,
+                # subnet_id removed - instances will be distributed across subnet_ids at module level
                 "root_volume_size": default_root_volume_size,
                 "root_volume_type": default_root_volume_type,
                 "security_group_name": service_config.get("security_group_name", ""),
@@ -192,9 +200,9 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
         else:
             # Fallback to single bucket for backward compatibility
             buckets.append({
-                "bucket_name": service_config.get("bucket_name", ""),
+            "bucket_name": service_config.get("bucket_name", ""),
                 "versioning": service_config.get("versioning", True),
-                "encryption": service_config.get("encryption", True),
+            "encryption": service_config.get("encryption", True),
                 "block_public_access": service_config.get("block_public_access", True),
                 "storage_class": service_config.get("storage_class", "STANDARD"),
                 "enable_logging": service_config.get("enable_logging", False),
@@ -213,7 +221,7 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
         
         if databases_config:
             for db in databases_config:
-                databases.append({
+                db_config = {
                     "identifier": db.get("identifier", "box-rds"),
                     "engine": db.get("engine", "mysql"),
                     "instance_class": db.get("instance_class", "db.t3.micro"),
@@ -229,18 +237,23 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                     "backup_window": db.get("backup_window", ""),
                     "maintenance_window": db.get("maintenance_window", ""),
                     "tags": _parse_tags(db.get("tags", "")),
-                })
+                }
+                # Add iops if storage type requires it (io1, io2, gp3)
+                storage_type = db.get("storage_type", "gp3")
+                if storage_type in ["io1", "io2", "gp3"]:
+                    db_config["iops"] = db.get("iops", 3000 if storage_type == "gp3" else 1000)
+                databases.append(db_config)
         else:
             # Fallback to single database for backward compatibility
-            databases.append({
-                "identifier": service_config.get("identifier", "box-rds"),
-                "engine": service_config.get("engine", "mysql"),
-                "instance_class": service_config.get("instance_class", "db.t3.micro"),
-                "allocated_storage": service_config.get("allocated_storage", 20),
-                "storage_type": service_config.get("storage_type", "gp3"),
-                "db_name": service_config.get("db_name", ""),
-                "username": service_config.get("username", "admin"),
-                "password": service_config.get("password", ""),
+            db_config = {
+            "identifier": service_config.get("identifier", "box-rds"),
+            "engine": service_config.get("engine", "mysql"),
+            "instance_class": service_config.get("instance_class", "db.t3.micro"),
+            "allocated_storage": service_config.get("allocated_storage", 20),
+            "storage_type": service_config.get("storage_type", "gp3"),
+            "db_name": service_config.get("db_name", ""),
+            "username": service_config.get("username", "admin"),
+            "password": service_config.get("password", ""),
                 "backup_retention_period": service_config.get("backup_retention_period", 7),
                 "security_group_name": service_config.get("security_group_name", ""),
                 "publicly_accessible": service_config.get("publicly_accessible", False),
@@ -248,7 +261,12 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                 "backup_window": service_config.get("backup_window", ""),
                 "maintenance_window": service_config.get("maintenance_window", ""),
                 "tags": _parse_tags(service_config.get("tags", "")),
-            })
+            }
+            # Add iops if storage type requires it (io1, io2, gp3)
+            storage_type = service_config.get("storage_type", "gp3")
+            if storage_type in ["io1", "io2", "gp3"]:
+                db_config["iops"] = service_config.get("iops", 3000 if storage_type == "gp3" else 1000)
+            databases.append(db_config)
         
         return {
             "databases": databases,
@@ -294,10 +312,11 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
         
         if filesystems_config:
             for fs in filesystems_config:
+                throughput_mode = fs.get("throughput_mode", "bursting")
                 fs_config = {
                     "name": fs.get("name", "box-efs"),
                     "performance_mode": fs.get("performance_mode", "generalPurpose"),
-                    "throughput_mode": fs.get("throughput_mode", "bursting"),
+                    "throughput_mode": throughput_mode,
                     "storage_class": fs.get("storage_class", "STANDARD"),
                     "encrypted": fs.get("encrypted", True),
                     "enable_backup": fs.get("enable_backup", True),
@@ -305,6 +324,9 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                     "security_group_name": fs.get("security_group_name", ""),
                     "tags": _parse_tags(fs.get("tags", "")),
                 }
+                # Add provisioned throughput if required
+                if throughput_mode == "provisioned":
+                    fs_config["provisioned_throughput_in_mibps"] = fs.get("provisioned_throughput_in_mibps", 1)
                 # Only include KMS key ID if it's actually provided (advanced use case)
                 kms_key = fs.get("kms_key_id", "")
                 if kms_key and kms_key.strip():
@@ -312,17 +334,21 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
                 filesystems.append(fs_config)
         else:
             # Fallback to single file system for backward compatibility
+            throughput_mode = service_config.get("throughput_mode", "bursting")
             fs_config = {
                 "name": service_config.get("name", "box-efs"),
                 "performance_mode": service_config.get("performance_mode", "generalPurpose"),
-                "throughput_mode": service_config.get("throughput_mode", "bursting"),
+                "throughput_mode": throughput_mode,
                 "storage_class": service_config.get("storage_class", "STANDARD"),
-                "encrypted": service_config.get("encrypted", True),
+            "encrypted": service_config.get("encrypted", True),
                 "enable_backup": service_config.get("enable_backup", True),
                 "transition_to_ia": service_config.get("transition_to_ia", None),
                 "security_group_name": service_config.get("security_group_name", ""),
                 "tags": _parse_tags(service_config.get("tags", "")),
             }
+            # Add provisioned throughput if required
+            if throughput_mode == "provisioned":
+                fs_config["provisioned_throughput_in_mibps"] = service_config.get("provisioned_throughput_in_mibps", 1)
             # Only include KMS key ID if it's actually provided (advanced use case)
             kms_key = service_config.get("kms_key_id", "")
             if kms_key and kms_key.strip():
@@ -340,6 +366,9 @@ def _get_service_config(service: str, configs: Dict, region: str) -> Dict:
 
 def run_box_project_aws_task(clean_data: dict) -> TaskExecutionResult:
     """Run the AWS Box Project task with boto3 integration"""
+    # Load the box-project-aws module (with reload to get latest changes)
+    box_aws = _get_box_aws_module()
+    
     access_key = clean_data.get("access_key", "").strip()
     secret_key = clean_data.get("secret_key", "").strip()
     session_token = clean_data.get("session_token", "").strip()
@@ -421,6 +450,10 @@ def run_box_project_aws_task(clean_data: dict) -> TaskExecutionResult:
             # Build module inputs
             inputs = {}
             for key, value in config.items():
+                # Skip subnet_ids and vpc_id if VPC module exists - they'll be wired via module outputs
+                if vpc_id_var and key in ["subnet_ids", "vpc_id"]:
+                    continue
+                    
                 root_var_name = f"{svc}_{key}"
                 register_variable(root_var_name)
                 # Determine value type for coercion
@@ -435,26 +468,22 @@ def run_box_project_aws_task(clean_data: dict) -> TaskExecutionResult:
                 tfvars_values[root_var_name] = box_aws.coerce_tfvars_value(value, value_type)
                 inputs[key] = f"var.{root_var_name}"
             
-            # Handle dependencies
+            # Handle dependencies - wire VPC outputs directly
             if svc == "vpc":
                 vpc_id_var = "module.vpc.vpc_id"
                 subnet_ids_var = "module.vpc.public_subnet_ids"
             elif svc == "ec2" and vpc_id_var:
+                # Wire VPC ID and subnets from VPC module outputs
                 inputs["vpc_id"] = vpc_id_var
-                if not inputs.get("subnet_id"):
-                    # Use public subnet if VPC module is selected
-                    inputs["subnet_id"] = "module.vpc.public_subnet_ids[0]"
+                inputs["subnet_ids"] = "module.vpc.public_subnet_ids"
+                # EC2 instances will be distributed across subnet_ids at module level
             elif svc == "rds" and vpc_id_var:
-                if not inputs.get("vpc_id"):
-                    inputs["vpc_id"] = vpc_id_var
-                if not inputs.get("subnet_ids") or not config.get("subnet_ids"):
-                    # Use private subnets for RDS
-                    inputs["subnet_ids"] = "module.vpc.private_subnet_ids"
+                # Wire VPC ID and subnets from VPC module outputs
+                inputs["vpc_id"] = vpc_id_var
+                inputs["subnet_ids"] = "module.vpc.private_subnet_ids"
             elif svc == "efs" and vpc_id_var:
-                if not inputs.get("vpc_id"):
+                # Wire VPC ID and subnets from VPC module outputs
                     inputs["vpc_id"] = vpc_id_var
-                if not inputs.get("subnet_ids") or not config.get("subnet_ids"):
-                    # Use private subnets for EFS (recommended for security)
                     inputs["subnet_ids"] = "module.vpc.private_subnet_ids"
             
             module_blocks.append(box_aws.root_module_call(svc, inputs))

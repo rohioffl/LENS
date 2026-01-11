@@ -1,7 +1,7 @@
 # OS-generated
 .DS_Store
 Thumbs.db
-
+test_terraform_generation.py
 .env
 lens-backend/.env
 # Python

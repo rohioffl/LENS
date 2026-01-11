@@ -507,20 +507,6 @@ const Dashboard = () => {
   const [vm2gkeError, setVm2gkeError] = useState('');
   const [vm2gkeArtifacts, setVm2gkeArtifacts] = useState([]);
   
-  const [boxCloud, setBoxCloud] = useState('aws');
-  const [boxAwsRegion, setBoxAwsRegion] = useState('ap-south-1');
-  const [boxGcpProject, setBoxGcpProject] = useState('');
-  const [boxGcpRegion, setBoxGcpRegion] = useState('us-central1');
-  const [boxServiceOptions, setBoxServiceOptions] = useState([]);
-  const [boxServiceSchemas, setBoxServiceSchemas] = useState({});
-  const [boxSelectedServices, setBoxSelectedServices] = useState([]);
-  const [boxServiceInputs, setBoxServiceInputs] = useState({});
-  const [boxMetadataLoading, setBoxMetadataLoading] = useState(false);
-  const [boxMetadataError, setBoxMetadataError] = useState('');
-  const [boxArtifacts, setBoxArtifacts] = useState([]);
-  const [boxLogs, setBoxLogs] = useState('');
-  const [boxError, setBoxError] = useState('');
-  
   // AWS Box Project with boto3 integration
   const [boxAwsRegions, setBoxAwsRegions] = useState([]);
   const [boxAwsRegionsLoading, setBoxAwsRegionsLoading] = useState(false);
@@ -549,6 +535,7 @@ const Dashboard = () => {
   const [boxAwsEc2KeyPairGenerating, setBoxAwsEc2KeyPairGenerating] = useState(false);
   const [boxAwsGeneratedKeyPair, setBoxAwsGeneratedKeyPair] = useState(null); // { key_name, private_key, public_key }
   const [boxAwsVpcCount, setBoxAwsVpcCount] = useState(1);
+  const [boxAwsVpcExpanded, setBoxAwsVpcExpanded] = useState({}); // Track which VPCs are expanded
   const [boxAwsVpcTotalSubnets, setBoxAwsVpcTotalSubnets] = useState(2);
   const [boxAwsS3Count, setBoxAwsS3Count] = useState(1);
   const [boxAwsS3BucketsExpanded, setBoxAwsS3BucketsExpanded] = useState({});
@@ -592,7 +579,6 @@ const Dashboard = () => {
   useArtifactCleanup(eksTfArtifacts);
   useArtifactCleanup(eksManifestArtifacts);
   useArtifactCleanup(vm2gkeArtifacts);
-  useArtifactCleanup(boxArtifacts);
   useArtifactCleanup(boxAwsArtifacts);
 
   const resolvedRegion = awsRegion === 'custom' ? customRegion.trim() : awsRegion;
@@ -1138,56 +1124,6 @@ const Dashboard = () => {
 
 
   useEffect(() => {
-    if (view !== 'box_project') {
-      setBoxServiceOptions([]);
-      setBoxServiceSchemas({});
-      setBoxSelectedServices([]);
-      setBoxServiceInputs({});
-      setBoxMetadataError('');
-      setBoxMetadataLoading(false);
-      return;
-    }
-    setBoxMetadataLoading(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await postJson('/api/box/metadata/', {
-          cloud_provider: boxCloud,
-        });
-        const options = res.services || [];
-        const schemas = res.inputs || {};
-        setBoxServiceOptions(options);
-        setBoxServiceSchemas(schemas);
-        setBoxMetadataError('');
-        setBoxSelectedServices((prev) => {
-          const filtered = prev.filter((svc) => options.some((opt) => opt.id === svc));
-          if (filtered.length) {
-            ensureBoxServiceDefaults(filtered, schemas);
-          }
-          setBoxServiceInputs((prevInputs) => {
-            const nextInputs = {};
-            filtered.forEach((svc) => {
-              if (prevInputs[svc]) {
-                nextInputs[svc] = prevInputs[svc];
-              }
-            });
-            return nextInputs;
-          });
-          return filtered;
-        });
-      } catch (err) {
-        setBoxMetadataError(err.message || String(err));
-        setBoxServiceOptions([]);
-        setBoxServiceSchemas({});
-        setBoxSelectedServices([]);
-        setBoxServiceInputs({});
-      } finally {
-        setBoxMetadataLoading(false);
-      }
-    }, debounceDelay);
-    return () => clearTimeout(timer);
-  }, [view, boxCloud]);
-
-  useEffect(() => {
     if (view !== 'vm2gke_manifests') {
       setVm2gkeInstances([]);
       setVm2gkeInstancesError('');
@@ -1587,51 +1523,6 @@ const Dashboard = () => {
   };
   const selectAllEksResourceTypes = () => setSelectedEksResourceTypes(DEFAULT_EKS_RESOURCE_TYPES.slice());
   const clearEksResourceTypes = () => setSelectedEksResourceTypes([]);
-  const getBoxServiceLabel = (service) =>
-    boxServiceOptions.find((option) => option.id === service)?.label || service;
-  const ensureBoxServiceDefaults = (serviceIds, schemaOverride) => {
-    const schemaSource = schemaOverride || boxServiceSchemas;
-    setBoxServiceInputs((prev) => {
-      const next = { ...prev };
-      serviceIds.forEach((svc) => {
-        if (!next[svc]) {
-          const schema = schemaSource?.[svc] || [];
-          const defaults = {};
-          schema.forEach((field) => {
-            defaults[field.name] = field.default ?? '';
-          });
-          next[svc] = defaults;
-        }
-      });
-      return next;
-    });
-  };
-  const toggleBoxService = (service) => {
-    setBoxSelectedServices((prev) => {
-      const exists = prev.includes(service);
-      const updated = exists ? prev.filter((item) => item !== service) : [...prev, service];
-      if (!exists) {
-        ensureBoxServiceDefaults([service]);
-      }
-      return updated;
-    });
-  };
-  const selectAllBoxServices = () => {
-    const all = boxServiceOptions.map((option) => option.id);
-    setBoxSelectedServices(all);
-    ensureBoxServiceDefaults(all);
-  };
-  const clearBoxServices = () => setBoxSelectedServices([]);
-  const updateBoxServiceInput = (service, field, value) => {
-    setBoxServiceInputs((prev) => ({
-      ...prev,
-      [service]: {
-        ...(prev[service] || {}),
-        [field]: value,
-      },
-    }));
-  };
-
   const runTerraformTask = async () => {
     setTfError('');
     setTfLogs('Submitting Terraform bundle request...\n');
@@ -1860,50 +1751,6 @@ const Dashboard = () => {
       setVm2gkeArtifacts(createDownloadEntries(event.artifacts || []));
     } catch (err) {
       setVm2gkeError(err.message || String(err));
-    }
-  };
-
-  const runBoxProjectTask = async () => {
-    setBoxError('');
-    setBoxLogs('Preparing Terraform project...\n');
-    setBoxArtifacts([]);
-    if (!boxSelectedServices.length) {
-      setBoxError('Select at least one service.');
-      return;
-    }
-    if (boxCloud === 'aws' && !boxAwsRegion.trim()) {
-      setBoxError('AWS region is required.');
-      return;
-    }
-    if (boxCloud === 'gcp' && (!boxGcpProject.trim() || !boxGcpRegion.trim())) {
-      setBoxError('GCP project and region are required.');
-      return;
-    }
-    const payload = {
-      cloud_provider: boxCloud,
-      services: boxSelectedServices,
-      service_inputs: boxSelectedServices.reduce((acc, svc) => {
-        if (boxServiceInputs[svc]) {
-          acc[svc] = boxServiceInputs[svc];
-        }
-        return acc;
-      }, {}),
-    };
-    if (boxCloud === 'aws') {
-      payload.aws_region = boxAwsRegion.trim();
-    } else {
-      payload.gcp_project = boxGcpProject.trim();
-      payload.gcp_region = boxGcpRegion.trim();
-    }
-    try {
-      const event = await runStreamingTask(
-        '/api/tasks/run-stream/',
-        { task_id: 'box_project', data: payload },
-        (message) => setBoxLogs((prev) => mergeBackendLogs(prev, message))
-      );
-      setBoxArtifacts(createDownloadEntries(event.artifacts || []));
-    } catch (err) {
-      setBoxError(err.message || String(err));
     }
   };
 
@@ -2674,17 +2521,6 @@ const Dashboard = () => {
           <h2>VM → GKE Manifests</h2>
           <p>Convert VM instances (EC2 or GCP Compute Engine) into Kubernetes manifests using Gemini.</p>
           <button onClick={() => setView('vm2gke_manifests')}>Generate Manifests</button>
-        </motion.div>
-        <motion.div
-          className="task-card"
-          variants={cardVariants}
-          custom={12}
-          whileHover="hover"
-          whileTap={{ scale: 0.98 }}
-        >
-          <h2>Box Terraform Generator</h2>
-          <p>Assemble Terraform modules for popular AWS or GCP services in minutes.</p>
-          <button onClick={() => setView('box_project')}>Build Project</button>
         </motion.div>
         <motion.div
           className="task-card"
@@ -3955,11 +3791,42 @@ const Dashboard = () => {
                   </label>
                   {Array.from({ length: boxAwsVpcCount }).map((_, vpcIdx) => {
                     const vpc = boxAwsServiceConfigs.vpc?.vpcs?.[vpcIdx] || { name: '', cidr: '10.0.0.0/16', subnets: [] };
+                    const isExpanded = boxAwsVpcExpanded[vpcIdx] !== false; // Default to expanded
                     return (
                       <div key={vpcIdx} style={{ marginTop: '20px', padding: '15px', border: darkMode ? '2px solid #60a5fa' : '2px solid #0073bb', borderRadius: '4px', backgroundColor: darkMode ? '#1e293b' : '#f0f8ff' }}>
-                        <h4 style={{ margin: '0 0 15px 0', fontSize: '16px', fontWeight: 'bold', color: darkMode ? '#60a5fa' : '#0073bb' }}>
-                          VPC {vpcIdx + 1}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isExpanded ? '15px' : '0' }}>
+                          <h4 style={{ margin: '0', fontSize: '16px', fontWeight: 'bold', color: darkMode ? '#60a5fa' : '#0073bb' }}>
+                            🌐 VPC {vpcIdx + 1} {vpc.name ? `- ${vpc.name}` : ''}
                         </h4>
+                          <button
+                            type="button"
+                            onClick={() => setBoxAwsVpcExpanded({ ...boxAwsVpcExpanded, [vpcIdx]: !isExpanded })}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '5px 10px',
+                              fontSize: '18px',
+                              color: darkMode ? '#60a5fa' : '#0073bb',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              minWidth: '30px',
+                              height: '30px'
+                            }}
+                            title={isExpanded ? 'Collapse' : 'Expand'}
+                          >
+                            <span style={{ 
+                              transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                              transition: 'transform 0.2s',
+                              display: 'inline-block'
+                            }}>
+                              ▼
+                            </span>
+                          </button>
+                        </div>
+                        {isExpanded && (
+                        <>
                         <label>
                           VPC Name
                           <input
@@ -4162,168 +4029,11 @@ const Dashboard = () => {
                             })()}
                           </div>
                         </div>
+                        </>
+                        )}
                       </div>
                     );
                   })}
-                  <label>
-                    VPC CIDR Block
-                    <input
-                      value={boxAwsServiceConfigs.vpc?.cidr || '10.0.0.0/16'}
-                      onChange={(e) => {
-                        setBoxAwsServiceConfigs({
-                          ...boxAwsServiceConfigs,
-                          vpc: { ...boxAwsServiceConfigs.vpc, cidr: e.target.value }
-                        });
-                      }}
-                      placeholder="10.0.0.0/16"
-                    />
-                    <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
-                      Example: 10.0.0.0/16 (provides 65,536 IP addresses)
-                    </small>
-                  </label>
-                  <label>
-                    Total Number of Subnets
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={boxAwsVpcTotalSubnets}
-                      onChange={(e) => {
-                        const num = parseInt(e.target.value) || 1;
-                        setBoxAwsVpcTotalSubnets(num);
-                        // Initialize subnets array if needed
-                        const currentSubnets = boxAwsServiceConfigs.vpc?.subnets || [];
-                        const newSubnets = [];
-                        for (let i = 0; i < num; i++) {
-                          newSubnets.push(currentSubnets[i] || { cidr: '', type: 'public', name: '' });
-                        }
-                        setBoxAwsServiceConfigs({
-                          ...boxAwsServiceConfigs,
-                          vpc: { ...boxAwsServiceConfigs.vpc, subnets: newSubnets }
-                        });
-                      }}
-                    />
-                  </label>
-                  <div style={{ marginTop: '20px' }}>
-                    <h5 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '10px' }}>Subnet Configuration</h5>
-                    {Array.from({ length: boxAwsVpcTotalSubnets }).map((_, idx) => {
-                      const subnet = boxAwsServiceConfigs.vpc?.subnets?.[idx] || { cidr: '', type: 'public', name: '' };
-                      return (
-                        <div key={idx} style={{ marginBottom: '15px', padding: '15px', border: '1px solid #ddd', borderRadius: '4px' }}>
-                          <h6 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: 'bold' }}>Subnet {idx + 1}</h6>
-                          <label style={{ display: 'block', marginBottom: '10px' }}>
-                            Subnet Name
-                            <input
-                              type="text"
-                              value={subnet.name || ''}
-                              onChange={(e) => {
-                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
-                                while (subnets.length <= idx) {
-                                  subnets.push({ cidr: '', type: 'public', name: '' });
-                                }
-                                subnets[idx] = { ...subnets[idx], name: e.target.value };
-                                setBoxAwsServiceConfigs({
-                                  ...boxAwsServiceConfigs,
-                                  vpc: { ...boxAwsServiceConfigs.vpc, subnets }
-                                });
-                              }}
-                              placeholder={`subnet-${idx + 1}`}
-                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
-                            />
-                            <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
-                              Name for this subnet (e.g., public-subnet-1, private-subnet-1)
-                            </small>
-                          </label>
-                          <label style={{ display: 'block', marginBottom: '10px' }}>
-                            CIDR Block
-                            <input
-                              type="text"
-                              value={subnet.cidr || ''}
-                              onChange={(e) => {
-                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
-                                while (subnets.length <= idx) {
-                                  subnets.push({ cidr: '', type: 'public', name: '' });
-                                }
-                                subnets[idx] = { ...subnets[idx], cidr: e.target.value };
-                                setBoxAwsServiceConfigs({
-                                  ...boxAwsServiceConfigs,
-                                  vpc: { ...boxAwsServiceConfigs.vpc, subnets }
-                                });
-                              }}
-                              placeholder={`10.0.${idx + 1}.0/24`}
-                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
-                            />
-                            <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
-                              Example: 10.0.{idx + 1}.0/24 (provides 256 IP addresses)
-                            </small>
-                          </label>
-                          <label style={{ display: 'block' }}>
-                            Subnet Type
-                            <select
-                              value={subnet.type || 'public'}
-                              onChange={(e) => {
-                                const subnets = [...(boxAwsServiceConfigs.vpc?.subnets || [])];
-                                while (subnets.length <= idx) {
-                                  subnets.push({ cidr: '', type: 'public', name: '' });
-                                }
-                                subnets[idx] = { ...subnets[idx], type: e.target.value };
-                                
-                                // Auto-enable IGW if there are any public subnets
-                                const hasPublicSubnets = subnets.some(s => s.type === 'public');
-                                // Auto-enable NAT Gateway if there are any private subnets
-                                const hasPrivateSubnets = subnets.some(s => s.type === 'private');
-                                
-                                setBoxAwsServiceConfigs({
-                                  ...boxAwsServiceConfigs,
-                                  vpc: { 
-                                    ...boxAwsServiceConfigs.vpc, 
-                                    subnets,
-                                    enable_internet_gateway: hasPublicSubnets,
-                                    enable_nat_gateway: hasPrivateSubnets
-                                  }
-                                });
-                              }}
-                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
-                            >
-                              <option value="public">Public Subnet (Internet Gateway)</option>
-                              <option value="private">Private Subnet (NAT Gateway)</option>
-                            </select>
-                          </label>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div style={{ marginTop: '20px', padding: '15px', backgroundColor: darkMode ? '#334155' : '#f0f8ff', borderRadius: '4px', border: darkMode ? '1px solid #475569' : '1px solid #b3d9ff' }}>
-                    <h5 style={{ margin: '0 0 10px 0', fontSize: '14px', fontWeight: 'bold', color: darkMode ? '#60a5fa' : '#0066cc' }}>Gateway Configuration</h5>
-                    <div style={{ fontSize: '14px', color: darkMode ? '#cbd5e1' : '#333' }}>
-                      {(() => {
-                        const subnets = boxAwsServiceConfigs.vpc?.subnets || [];
-                        const hasPublicSubnets = subnets.some(s => s.type === 'public');
-                        const hasPrivateSubnets = subnets.some(s => s.type === 'private');
-                        return (
-                          <>
-                            {hasPublicSubnets && (
-                              <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
-                                <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
-                                <span><strong>Internet Gateway (IGW)</strong> will be enabled for public subnets</span>
-                              </div>
-                            )}
-                            {hasPrivateSubnets && (
-                              <div style={{ display: 'flex', alignItems: 'center' }}>
-                                <span style={{ color: '#28a745', marginRight: '8px', fontSize: '16px' }}>✓</span>
-                                <span><strong>NAT Gateway</strong> will be enabled for private subnets</span>
-                              </div>
-                            )}
-                            {!hasPublicSubnets && !hasPrivateSubnets && (
-                              <div style={{ color: '#666', fontStyle: 'italic' }}>
-                                Configure subnets above to automatically enable gateways
-                              </div>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
 
                   {/* VPC Summary */}
                   <div style={{ marginTop: '25px', padding: '20px', backgroundColor: darkMode ? '#0f172a' : '#ecfdf5', borderRadius: '12px', border: darkMode ? '2px solid #10b981' : '2px solid #059669' }}>
@@ -4627,48 +4337,48 @@ const Dashboard = () => {
                         </h4>
                         <label style={{ display: 'block', marginBottom: '15px' }}>
                           Instance Name
-                          <input
+                    <input
                             type="text"
                             value={boxAwsServiceConfigs.ec2?.instances?.[instance.id]?.name || instance.name || ''}
-                            onChange={(e) => {
+                      onChange={(e) => {
                               const instances = { ...(boxAwsServiceConfigs.ec2?.instances || {}) };
                               instances[instance.id] = { ...instances[instance.id], name: e.target.value };
-                              setBoxAwsServiceConfigs({
-                                ...boxAwsServiceConfigs,
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
                                 ec2: { ...boxAwsServiceConfigs.ec2, instances }
-                              });
+                        });
                               // Also update local state
                               setBoxAwsEc2Instances(boxAwsEc2Instances.map(i => 
                                 i.id === instance.id ? { ...i, name: e.target.value } : i
                               ));
-                            }}
+                      }}
                             placeholder={`e.g., web-server-${instanceIdx + 1}, api-server`}
                             style={{ width: '100%', marginTop: '5px', padding: '8px', fontSize: '14px' }}
-                          />
+                    />
                           <small style={{ color: '#666', display: 'block', marginTop: '5px' }}>
                             A unique name to identify this instance (will be used as AWS Name tag)
-                          </small>
-                        </label>
+                    </small>
+                  </label>
                         <label style={{ display: 'block' }}>
                           Additional Tags (comma-separated key=value)
-                          <input
+                    <input
                             type="text"
                             value={boxAwsServiceConfigs.ec2?.instances?.[instance.id]?.tags || ''}
-                            onChange={(e) => {
+                      onChange={(e) => {
                               const instances = { ...(boxAwsServiceConfigs.ec2?.instances || {}) };
                               instances[instance.id] = { ...instances[instance.id], tags: e.target.value };
-                              setBoxAwsServiceConfigs({
-                                ...boxAwsServiceConfigs,
+                        setBoxAwsServiceConfigs({
+                          ...boxAwsServiceConfigs,
                                 ec2: { ...boxAwsServiceConfigs.ec2, instances }
-                              });
-                            }}
+                        });
+                      }}
                             placeholder="Environment=Production,Owner=DevTeam,Project=MyApp"
                             style={{ width: '100%', marginTop: '5px', padding: '8px', fontSize: '14px' }}
-                          />
+                    />
                           <small style={{ color: '#666', display: 'block', marginTop: '5px' }}>
                             Example: Env=prod,Owner=team,Purpose=webserver
                           </small>
-                        </label>
+                  </label>
                       </div>
 
                       {/* Security Groups */}
@@ -4771,10 +4481,10 @@ const Dashboard = () => {
                                         </select>
                                       </td>
                                       <td style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        <input
-                                          type="text"
+                            <input
+                              type="text"
                                           value={rule.cidr}
-                                          onChange={(e) => {
+                              onChange={(e) => {
                                             setBoxAwsEc2SecurityGroupRules(boxAwsEc2SecurityGroupRules.map(r => 
                                               r.id === rule.id ? { ...r, cidr: e.target.value } : r
                                             ));
@@ -4867,14 +4577,14 @@ const Dashboard = () => {
                                     key_name: selectedKey.name,
                                     public_key: selectedKey.public_key 
                                   };
-                                  setBoxAwsServiceConfigs({
-                                    ...boxAwsServiceConfigs,
+                                setBoxAwsServiceConfigs({
+                                  ...boxAwsServiceConfigs,
                                     ec2: { ...boxAwsServiceConfigs.ec2, instances }
-                                  });
+                                });
                                 }
                               }
-                            }}
-                            style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
+                              }}
+                              style={{ width: '100%', padding: '8px', fontSize: '14px', marginTop: '5px' }}
                           >
                             <option value="select">-- Select Key Pair --</option>
                             <option value="create-new">➕ Create New Key</option>
@@ -4884,7 +4594,7 @@ const Dashboard = () => {
                               </option>
                             ))}
                           </select>
-                        </label>
+                          </label>
 
                         {/* Create New Key UI */}
                         {boxAwsEc2Instances.find(i => i.id === instance.id)?.keyPairSelection === 'create-new' && (
@@ -4894,7 +4604,7 @@ const Dashboard = () => {
                               <input
                                 type="text"
                                 value={boxAwsEc2Instances.find(i => i.id === instance.id)?.newKeyName || ''}
-                                onChange={(e) => {
+                              onChange={(e) => {
                                   setBoxAwsEc2Instances(boxAwsEc2Instances.map(i => 
                                     i.id === instance.id ? { ...i, newKeyName: e.target.value } : i
                                   ));
@@ -4944,8 +4654,8 @@ const Dashboard = () => {
                                     key_name: res.key_name,
                                     public_key: res.public_key 
                                   };
-                                  setBoxAwsServiceConfigs({
-                                    ...boxAwsServiceConfigs,
+                                setBoxAwsServiceConfigs({
+                                  ...boxAwsServiceConfigs,
                                     ec2: { ...boxAwsServiceConfigs.ec2, instances }
                                   });
                                   
@@ -4979,8 +4689,8 @@ const Dashboard = () => {
                             >
                               🔐 Generate Key Pair
                             </button>
-                          </div>
-                        )}
+                              </div>
+                            )}
 
                         {/* Show locked key info */}
                         {boxAwsEc2Instances.find(i => i.id === instance.id)?.keyPairSelection && 
@@ -4989,12 +4699,12 @@ const Dashboard = () => {
                           <div style={{ padding: '12px', backgroundColor: darkMode ? '#064e3b' : '#d1fae5', borderRadius: '6px', border: '1px solid #10b981' }}>
                             <div style={{ color: darkMode ? '#34d399' : '#047857', fontWeight: 'bold', marginBottom: '5px' }}>
                               ✓ Key "{boxAwsEc2Instances.find(i => i.id === instance.id)?.keyPairSelection}" assigned
-                            </div>
+                              </div>
                             <div style={{ color: darkMode ? '#a7f3d0' : '#065f46', fontSize: '13px', marginBottom: '10px' }}>
                               This key pair is locked for this instance. You can reuse it for other instances from the dropdown.
-                            </div>
-                            <button
-                              type="button"
+                </div>
+                <button
+                  type="button"
                               onClick={() => {
                                 if (confirm('Regenerate key pair? This will create a completely new key.')) {
                                   setBoxAwsEc2Instances(boxAwsEc2Instances.map(i => 
@@ -5002,20 +4712,20 @@ const Dashboard = () => {
                                   ));
                                 }
                               }}
-                              style={{
+                  style={{
                                 padding: '6px 12px',
                                 background: '#f59e0b',
                                 color: 'white',
-                                border: 'none',
+                    border: 'none',
                                 borderRadius: '4px',
-                                cursor: 'pointer',
+                    cursor: 'pointer',
                                 fontSize: '13px',
                                 fontWeight: 'bold'
-                              }}
+                  }}
                             >
                               🔄 Regenerate
-                            </button>
-                          </div>
+                </button>
+              </div>
                         )}
 
                         <div style={{ marginTop: '10px', padding: '10px', backgroundColor: darkMode ? '#1e3a8a' : '#dbeafe', borderRadius: '6px', fontSize: '12px' }}>
@@ -5040,31 +4750,31 @@ const Dashboard = () => {
                           User Data Script (bash)
                           <textarea
                             value={boxAwsServiceConfigs.ec2?.instances?.[instance.id]?.user_data || ''}
-                            onChange={(e) => {
+                    onChange={(e) => {
                               const instances = { ...(boxAwsServiceConfigs.ec2?.instances || {}) };
                               instances[instance.id] = { ...instances[instance.id], user_data: e.target.value };
-                              setBoxAwsServiceConfigs({
-                                ...boxAwsServiceConfigs,
+                      setBoxAwsServiceConfigs({
+                        ...boxAwsServiceConfigs,
                                 ec2: { ...boxAwsServiceConfigs.ec2, instances }
-                              });
-                            }}
+                      });
+                    }}
                             placeholder={`#!/bin/bash\n# Install web server\nyum update -y\nyum install -y httpd\nsystemctl start httpd\nsystemctl enable httpd`}
                             style={{ width: '100%', marginTop: '5px', padding: '8px', fontSize: '13px', fontFamily: 'monospace', minHeight: '100px' }}
-                          />
+                  />
                           <small style={{ color: '#666', display: 'block', marginTop: '5px' }}>
                             Must start with #!/bin/bash. This script runs as root on first boot.
                           </small>
-                        </label>
-                      </div>
+                </label>
+              </div>
 
-                      {/* Application and OS Images */}
+              {/* Application and OS Images */}
                       <div style={{ marginBottom: '20px', border: '1px solid #ddd', borderRadius: '4px', padding: '15px', backgroundColor: darkMode ? '#0f172a' : 'white' }}>
                         <h4 style={{ marginTop: 0, fontSize: '15px', fontWeight: 'bold', color: darkMode ? '#e2e8f0' : '#333' }}>
                           Application and OS Images (AMI)
                         </h4>
                         <p style={{ fontSize: '13px', color: '#666', marginBottom: '15px' }}>
                           Select the operating system and software for this instance.
-                        </p>
+                </p>
                 
                 {/* Quick Start Tabs */}
                 <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', borderBottom: '1px solid #ddd', paddingBottom: '10px' }}>
@@ -5467,10 +5177,10 @@ const Dashboard = () => {
                             <p style={{ fontSize: '13px', color: '#666', margin: '5px 0 0 0' }}>
                               Add extra storage volumes for this instance
                             </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
                               const currentVolumes = instance.ebsVolumes || [];
                               const newVolId = Math.max(0, ...currentVolumes.map(v => v.id || 0)) + 1;
                               setBoxAwsEc2Instances(boxAwsEc2Instances.map(i => 
@@ -5482,7 +5192,7 @@ const Dashboard = () => {
                                   ]
                                 } : i
                               ));
-                            }}
+                  }}
                             style={{
                               padding: '6px 12px',
                               backgroundColor: '#f59e0b',
@@ -5493,10 +5203,10 @@ const Dashboard = () => {
                               fontSize: '13px',
                               fontWeight: 'bold'
                             }}
-                          >
+                >
                             + Add Volume
-                          </button>
-                        </div>
+                </button>
+              </div>
 
                         {(!instance.ebsVolumes || instance.ebsVolumes.length === 0) ? (
                           <div style={{ padding: '15px', textAlign: 'center', color: '#666', backgroundColor: darkMode ? '#1e293b' : '#f9fafb', borderRadius: '4px', border: '1px dashed #ddd' }}>
@@ -5672,7 +5382,7 @@ const Dashboard = () => {
                                     </div>
                                   </div>
                                 )}
-                              </div>
+                </div>
                             ))}
                           </div>
                         )}
@@ -6132,13 +5842,13 @@ const Dashboard = () => {
                           ⏰ Lifecycle Policy
                         </h5>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
-                          <label>
+                  <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>Transition to IA (days)</span>
-                            <input
+                    <input
                               type="number"
                               min="30"
                               value={bucket.lifecycle_ia_days || ''}
-                              onChange={(e) => {
+                      onChange={(e) => {
                                 const newBuckets = [...(boxAwsServiceConfigs.s3?.buckets || [])];
                                 newBuckets[bucketIdx] = { ...bucket, lifecycle_ia_days: parseInt(e.target.value) || null };
                                 setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, s3: { ...boxAwsServiceConfigs.s3, buckets: newBuckets } });
@@ -6160,7 +5870,7 @@ const Dashboard = () => {
                                 const newBuckets = [...(boxAwsServiceConfigs.s3?.buckets || [])];
                                 newBuckets[bucketIdx] = { ...bucket, lifecycle_glacier_days: parseInt(e.target.value) || null };
                                 setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, s3: { ...boxAwsServiceConfigs.s3, buckets: newBuckets } });
-                              }}
+                      }}
                               placeholder="90"
                               style={{ width: '100%', padding: '8px', marginTop: '5px' }}
                             />
@@ -6185,7 +5895,7 @@ const Dashboard = () => {
                             <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
                               Delete objects after X days
                             </small>
-                          </label>
+                  </label>
                         </div>
 
                         {/* CORS & Tags */}
@@ -6989,7 +6699,7 @@ const Dashboard = () => {
                       min="1"
                       max="5"
                       value={boxAwsEfsCount}
-                      onChange={(e) => {
+                  onChange={(e) => {
                         const count = parseInt(e.target.value) || 1;
                         setBoxAwsEfsCount(Math.min(Math.max(count, 1), 5));
                         // Initialize file systems array if needed
@@ -7007,7 +6717,7 @@ const Dashboard = () => {
                     <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
                       Create up to 5 EFS file systems at once
                     </small>
-                  </label>
+              </label>
 
                   {/* Individual EFS Configurations */}
                   {Array.from({ length: boxAwsEfsCount }).map((_, fsIdx) => {
@@ -7097,39 +6807,39 @@ const Dashboard = () => {
                         {boxAwsEfsFilesystemsExpanded[fsIdx] && (
                           <div style={{ padding: '20px', backgroundColor: darkMode ? '#1e293b' : '#faf5ff' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-                          <label>
+              <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>File System Name</span>
-                            <input
+                <input
                               value={fs.name || ''}
-                              onChange={(e) => {
+                  onChange={(e) => {
                                 const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
                                 newFs[fsIdx] = { ...fs, name: e.target.value };
                                 setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
-                              }}
+                  }}
                               placeholder={`efs-${fsIdx + 1}`}
                               style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-                            />
-                          </label>
-                          <label>
+                />
+              </label>
+              <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>Performance Mode</span>
-                            <select
+                <select
                               value={fs.performance_mode || 'generalPurpose'}
-                              onChange={(e) => {
+                  onChange={(e) => {
                                 const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
                                 newFs[fsIdx] = { ...fs, performance_mode: e.target.value };
                                 setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
-                              }}
+                  }}
                               style={{ width: '100%', padding: '8px', marginTop: '5px' }}
                             >
                               <option value="generalPurpose">General Purpose</option>
                               <option value="maxIO">Max I/O</option>
-                            </select>
-                          </label>
-                          <label>
+                </select>
+              </label>
+              <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>Throughput Mode</span>
                             <select
                               value={fs.throughput_mode || 'bursting'}
-                              onChange={(e) => {
+                  onChange={(e) => {
                                 const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
                                 newFs[fsIdx] = { ...fs, throughput_mode: e.target.value };
                                 setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
@@ -7140,7 +6850,7 @@ const Dashboard = () => {
                               <option value="provisioned">Provisioned</option>
                               <option value="elastic">Elastic</option>
                             </select>
-                          </label>
+              </label>
                           <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>Storage Class</span>
                             <select
@@ -7168,12 +6878,12 @@ const Dashboard = () => {
                               <strong>Mount Targets:</strong> EFS requires mount targets in each subnet where EC2 instances will access the file system. Select at least 2 subnets for high availability.
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
-                              <label>
+                  <label>
                                 <span style={{ fontSize: '13px', fontWeight: '600' }}>Select Subnets for Mount Targets</span>
                                 <select
                                   multiple
                                   value={fs.subnet_ids || []}
-                                  onChange={(e) => {
+                      onChange={(e) => {
                                     const selected = Array.from(e.target.selectedOptions, option => option.value);
                                     const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
                                     newFs[fsIdx] = { ...fs, subnet_ids: selected };
@@ -7190,12 +6900,12 @@ const Dashboard = () => {
                                 <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
                                   Hold Ctrl/Cmd to select multiple. Private subnets recommended for EFS.
                                 </small>
-                              </label>
-                              <label>
+                  </label>
+                  <label>
                                 <span style={{ fontSize: '13px', fontWeight: '600' }}>Security Group Name</span>
-                                <input
+                    <input
                                   value={fs.security_group_name || ''}
-                                  onChange={(e) => {
+                      onChange={(e) => {
                                     const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
                                     newFs[fsIdx] = { ...fs, security_group_name: e.target.value };
                                     setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
@@ -7206,23 +6916,23 @@ const Dashboard = () => {
                                 <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
                                   Security group for EFS mount targets (allows NFS port 2049)
                                 </small>
-                              </label>
+                  </label>
                             </div>
-                          </>
-                        )}
+                </>
+              )}
 
                         {!boxAwsSelectedServices.includes('vpc') && (
                           <div className="info-callout" style={{ marginTop: '15px', padding: '12px', backgroundColor: '#fff3cd', borderRadius: '4px', fontSize: '13px', border: '1px solid #ffc107' }}>
                             <strong>⚠️ VPC Required:</strong> EFS requires VPC configuration. Please select VPC service to configure subnets and security groups for EFS mount targets.
-                          </div>
-                        )}
+                </div>
+              )}
 
                         {/* Lifecycle Policy */}
                         <h5 style={{ marginTop: '20px', marginBottom: '10px', fontSize: '14px', fontWeight: 'bold', color: darkMode ? '#c4b5fd' : '#7c3aed' }}>
                           ⏰ Lifecycle Management
                         </h5>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }}>
-                          <label>
+        <label>
                             <span style={{ fontSize: '13px', fontWeight: '600' }}>Transition to IA (Infrequent Access)</span>
                             <select
                               value={fs.transition_to_ia || 'AFTER_30_DAYS'}
@@ -7239,11 +6949,11 @@ const Dashboard = () => {
                               <option value="AFTER_30_DAYS">After 30 days</option>
                               <option value="AFTER_60_DAYS">After 60 days</option>
                               <option value="AFTER_90_DAYS">After 90 days</option>
-                            </select>
+          </select>
                             <small style={{ display: 'block', marginTop: '5px', color: '#666' }}>
                               Move files to lower-cost storage tier after inactivity
                             </small>
-                          </label>
+        </label>
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', marginTop: '15px' }}>
                           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -7253,7 +6963,7 @@ const Dashboard = () => {
                               setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
                             }} style={{ width: '16px', height: '16px' }} />
                             <span style={{ fontSize: '13px', color: darkMode ? '#e2e8f0' : '#333' }}>🔒 Encryption</span>
-                          </label>
+          </label>
                           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                             <input type="checkbox" checked={fs.enable_backup !== false} onChange={(e) => {
                               const newFs = [...(boxAwsServiceConfigs.efs?.filesystems || [])];
@@ -7261,11 +6971,11 @@ const Dashboard = () => {
                               setBoxAwsServiceConfigs({ ...boxAwsServiceConfigs, efs: { ...boxAwsServiceConfigs.efs, filesystems: newFs } });
                             }} style={{ width: '16px', height: '16px' }} />
                             <span style={{ fontSize: '13px', color: darkMode ? '#e2e8f0' : '#333' }}>📅 Backup</span>
-                          </label>
+            </label>
                         </div>
                           </div>
                         )}
-                      </div>
+            </div>
                     );
                   })}
 
@@ -7288,18 +6998,18 @@ const Dashboard = () => {
                               <div>
                                 <span style={{ backgroundColor: darkMode ? '#a78bfa' : '#8b5cf6', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>#{idx + 1}</span>
                                 <div style={{ fontSize: '14px', fontWeight: 'bold', color: darkMode ? '#e2e8f0' : '#333', marginTop: '4px' }}>{fs.name || `efs-${idx + 1}`}</div>
-                              </div>
-                            </div>
+          </div>
+          </div>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
                               <span style={{ fontSize: '10px', padding: '3px 8px', borderRadius: '4px', backgroundColor: darkMode ? '#334155' : '#e9d5ff', color: darkMode ? '#c4b5fd' : '#7c3aed' }}>{fs.performance_mode === 'maxIO' ? 'Max I/O' : 'General'}</span>
                               <span style={{ fontSize: '10px', padding: '3px 8px', borderRadius: '4px', backgroundColor: darkMode ? '#334155' : '#f3f4f6', textTransform: 'capitalize' }}>{fs.throughput_mode || 'bursting'}</span>
                               {fs.encrypted !== false && <span style={{ fontSize: '10px', padding: '3px 8px', borderRadius: '4px', backgroundColor: '#dcfce7', color: '#166534' }}>🔒</span>}
                               {fs.enable_backup !== false && <span style={{ fontSize: '10px', padding: '3px 8px', borderRadius: '4px', backgroundColor: '#dbeafe', color: '#1e40af' }}>📅</span>}
-                            </div>
-                          </div>
+        </div>
+          </div>
                         );
                       })}
-                    </div>
+            </div>
                   </div>
                 </div>
               )}
@@ -7330,112 +7040,7 @@ const Dashboard = () => {
       </>
       )}
 
-      {view === 'box_project' && (
-      <>
-      <fieldset>
-        <legend>Cloud & Scope</legend>
-        <label>
-          Cloud Provider
-          <select value={boxCloud} onChange={(e) => setBoxCloud(e.target.value)}>
-            <option value="aws">AWS</option>
-            <option value="gcp">GCP</option>
-          </select>
-        </label>
-        {boxCloud === 'aws' ? (
-          <label>
-            AWS Region
-            <input value={boxAwsRegion} onChange={(e) => setBoxAwsRegion(e.target.value)} placeholder="ap-south-1" />
-          </label>
-        ) : (
-          <>
-            <label>
-              GCP Project ID
-              <input value={boxGcpProject} onChange={(e) => setBoxGcpProject(e.target.value)} placeholder="my-gcp-project" />
-            </label>
-            <label>
-              GCP Region
-              <input value={boxGcpRegion} onChange={(e) => setBoxGcpRegion(e.target.value)} placeholder="us-central1" />
-            </label>
-          </>
-        )}
-      </fieldset>
-      <fieldset>
-        <legend>Services</legend>
-        <div className="aws-subnet-selector">
-          <div className="label-row">
-            <label>Available Services</label>
-            <div className="pill-actions">
-              <button type="button" onClick={selectAllBoxServices} disabled={!boxServiceOptions.length}>
-                Select all
-              </button>
-              <button type="button" onClick={clearBoxServices} disabled={!boxSelectedServices.length}>
-                Clear
-              </button>
-            </div>
-          </div>
-          {boxMetadataLoading && <small>Loading service metadata...</small>}
-          {boxMetadataError && <div className="error">{boxMetadataError}</div>}
-          <div className="checkbox-grid">
-            {boxServiceOptions.map((service) => (
-              <label key={service.id} className="checkbox-item">
-                <input
-                  type="checkbox"
-                  checked={boxSelectedServices.includes(service.id)}
-                  onChange={() => toggleBoxService(service.id)}
-                />
-                <span>{service.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      </fieldset>
-      {!!boxSelectedServices.length && (
-        <motion.fieldset
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-        >
-          <legend>Service Parameters</legend>
-          <div className="info-callout">
-            Provide overrides for each module variable. Leave a field blank to use the default value suggested by box-project.
-          </div>
-          {boxSelectedServices.map((service) => (
-            <div key={service} className="service-input-card">
-              <h4>{getBoxServiceLabel(service)}</h4>
-              {(boxServiceSchemas[service] || []).map((field) => (
-                <label key={field.name}>
-                  {field.prompt || field.name}
-                  <input
-                    value={(boxServiceInputs[service] || {})[field.name] ?? ''}
-                    onChange={(e) => updateBoxServiceInput(service, field.name, e.target.value)}
-                    placeholder={field.default ?? ''}
-                  />
-                </label>
-              ))}
-              {!boxServiceSchemas[service]?.length && <small>No additional inputs required.</small>}
-            </div>
-          ))}
-        </motion.fieldset>
-      )}
-      <fieldset>
-        <legend>Generate Terraform</legend>
-        <button onClick={runBoxProjectTask} disabled={!boxSelectedServices.length}>
-          Build Terraform Project
-        </button>
-        {boxError && <div className="error">{boxError}</div>}
-        <h3>Logs</h3>
-        <pre>{boxLogs || 'Logs will appear here once a run starts.'}</pre>
-        <h3>Artifacts</h3>
-        <div className="artifacts">
-          {boxArtifacts.map((artifact) => (
-            <a className="download-link" key={artifact.url} href={artifact.url} download={artifact.filename}>
-              Download {artifact.filename}
-            </a>
-          ))}
-        </div>
-      </fieldset>
-      </>
-      )}
+      
 
       {isVpnView && (
       <>

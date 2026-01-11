@@ -690,66 +690,6 @@ class EksManifestForm(AutomationTaskForm):
         return cleaned
 
 
-class BoxProjectForm(AutomationTaskForm):
-    cloud_provider = forms.ChoiceField(
-        choices=(("aws", "AWS"), ("gcp", "GCP")),
-        label="Cloud Provider",
-    )
-    aws_region = forms.CharField(required=False, label="AWS Region", initial="ap-south-1")
-    gcp_project = forms.CharField(required=False, label="GCP Project ID")
-    gcp_region = forms.CharField(required=False, label="GCP Region", initial="us-central1")
-    services = forms.JSONField(label="Selected Services")
-    service_inputs = forms.JSONField(required=False, label="Service Inputs")
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields["task_id"].initial = self.initial.get("task_id") or "box_project"
-
-    def clean(self):
-        cleaned = super().clean()
-        provider = (cleaned.get("cloud_provider") or "").lower()
-        if provider not in {"aws", "gcp"}:
-            self.add_error("cloud_provider", "Select either AWS or GCP.")
-        if provider == "aws":
-            if not cleaned.get("aws_region"):
-                self.add_error("aws_region", "AWS region is required.")
-            cleaned["gcp_project"] = ""
-            cleaned["gcp_region"] = ""
-        elif provider == "gcp":
-            if not cleaned.get("gcp_project"):
-                self.add_error("gcp_project", "GCP project ID is required.")
-            if not cleaned.get("gcp_region"):
-                self.add_error("gcp_region", "GCP region is required.")
-        services = cleaned.get("services")
-        if isinstance(services, str):
-            try:
-                services = json.loads(services)
-            except json.JSONDecodeError:
-                self.add_error("services", "Services must be a JSON array.")
-                services = []
-        if not isinstance(services, list) or not services:
-            self.add_error("services", "Select at least one service.")
-            services = []
-        cleaned["services"] = [str(service).strip() for service in services if str(service).strip()]
-        inputs = cleaned.get("service_inputs")
-        if not inputs:
-            cleaned["service_inputs"] = {}
-        elif isinstance(inputs, str):
-            try:
-                data = json.loads(inputs)
-            except json.JSONDecodeError:
-                self.add_error("service_inputs", "Service inputs must be a JSON object.")
-            else:
-                if not isinstance(data, dict):
-                    self.add_error("service_inputs", "Service inputs must be an object.")
-                else:
-                    cleaned["service_inputs"] = data
-        elif not isinstance(inputs, dict):
-            self.add_error("service_inputs", "Service inputs must be an object.")
-
-        return cleaned
-
-
 class BoxProjectAwsForm(AutomationTaskForm):
     """Form for AWS Box Project with boto3 integration"""
     access_key = forms.CharField(required=False, label="AWS Access Key ID")
