@@ -93,9 +93,12 @@ def run_cmd(
             )
         except subprocess.CalledProcessError as exc:
             if attempt >= max(1, retries):
+                error_output = exc.stderr.strip() if exc.stderr else "No error details available"
                 message = f"Failed: {' '.join(cmd)}"
                 print(message)
-                raise CommandExecutionError(message) from exc
+                print(f"  Error: {error_output}")
+                print(f"  Exit code: {exc.returncode}")
+                raise CommandExecutionError(f"{message}\n  Error: {error_output}\n  Exit code: {exc.returncode}") from exc
             delay = retry_delay * attempt
             print(f"  Command failed (attempt {attempt}/{retries}); retrying in {delay:.1f}s")
             time.sleep(delay)
