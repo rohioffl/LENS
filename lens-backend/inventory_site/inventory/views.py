@@ -1386,9 +1386,9 @@ def box_project_aws_ec2_data_api(request):
     
     try:
         payload = json.loads(request.body or "{}")
-        region = payload.get("region")
+        region = payload.get("aws_region") or payload.get("region")
         if not region:
-            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+            return JsonResponse({"error": "Missing 'aws_region' field."}, status=400)
         
         creds = _aws_creds_from_payload(payload)
         # Configure boto3 - use form data if provided, otherwise use environment variables
@@ -1458,10 +1458,10 @@ def box_project_aws_rds_data_api(request):
     
     try:
         payload = json.loads(request.body or "{}")
-        region = payload.get("region")
+        region = payload.get("aws_region") or payload.get("region")
         engine = payload.get("engine", "mysql")
         if not region:
-            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+            return JsonResponse({"error": "Missing 'aws_region' field."}, status=400)
         
         creds = _aws_creds_from_payload(payload)
         # Configure boto3 - use form data if provided, otherwise use environment variables
@@ -1494,9 +1494,9 @@ def box_project_aws_availability_zones_api(request):
     
     try:
         payload = json.loads(request.body or "{}")
-        region = payload.get("region")
+        region = payload.get("aws_region") or payload.get("region")
         if not region:
-            return JsonResponse({"error": "Missing 'region' field."}, status=400)
+            return JsonResponse({"error": "Missing 'aws_region' field."}, status=400)
         
         creds = _aws_creds_from_payload(payload)
         # Configure boto3 - use form data if provided, otherwise use environment variables
